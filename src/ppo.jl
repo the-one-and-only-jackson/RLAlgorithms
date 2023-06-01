@@ -2,15 +2,15 @@ module PPO
 
 using CommonRLInterface, Flux, ProgressMeter, Parameters
 using CommonRLInterface.Wrappers: QuickWrapper
+using CommonRLSpaces
+
 using Random: default_rng, seed!, randperm
 using Statistics: mean, std
 using ChainRules: ignore_derivatives, @ignore_derivatives
-using CommonRLSpaces
 
 using RLEnvTools
 
-include("ActorCritics.jl")
-using .ActorCritics: ActorCritic, DiscreteActorCritic, get_actionvalue, ContinuousActorCritic
+using ..ActorCritics
 
 export 
     solve,
@@ -49,11 +49,6 @@ function Buffer(env, traj_len)
 end
 
 flatten(b::Buffer, N) = fmap(x->reshape(x, size(x)[1:end-N]..., :), b)
-
-function Base.copyto!(dst::Buffer, src::Buffer, idxs::Vector{Int64})
-    copyfun(b1, b2) = copyto!(b1, selectdim(b2, ndims(b2), idxs))
-    fmap(copyfun, dst, src)
-end
 
 function send_to!(buffer::Buffer, idx; kwargs...)
     for (key, val) in kwargs
@@ -325,7 +320,7 @@ function ppo(
 
         next!(prog; 
             step = n_transitions, 
-            showvalues = [(k,v[2][end]) for (k,v) in zip(keys(info.log),values(info.log))]
+            showvalues = zip(keys(info.log), map(x->x[2][end], values(info.log)))
         )
     end
     finish!(prog)
