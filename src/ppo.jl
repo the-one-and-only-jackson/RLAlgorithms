@@ -14,8 +14,7 @@ using ..ActorCritics
 
 export 
     solve,
-    PPOSolver,
-    ActorCritic
+    PPOSolver
 
 struct Buffer{Ts<:AbstractArray,Ta<:AbstractArray,Tr<:AbstractArray,Td<:AbstractArray{Bool}}
     s::Ts
@@ -74,6 +73,10 @@ function (logger::Logger)(x_val; kwargs...)
 end
 
 @with_kw struct PPOSolver
+    env::AbstractEnv
+    buffer::Buffer = Buffer(env, traj_len)
+    opt_0 = Flux.Optimisers.Adam(lr)
+    ac::ActorCritic = Actorcritic(env) 
     n_steps::Int64 = 1_000_000
     lr::Float32 = 3f-4
     lr_decay::Bool = true
@@ -90,11 +93,7 @@ end
     max_grad_norm::Float32 = 0.5
     rng=default_rng()
     seed::Int64 = 0
-    device::String = "cpu"
-    shared_dims::Vector{Int64} = []
-    actor_dims::Vector{Int64}  = [64, 64]
-    critic_dims::Vector{Int64} = [64, 64]
-    squash::Bool = false
+    device::Function = cpu # cpu or gpu
     kl_targ::Float64 = 0.02
     action_space::String = "auto"
 end
@@ -124,7 +123,7 @@ function value_loss_fun(
     returns::T, 
     clip_vloss::Bool, 
     clip_coef::T2
-    ) where {T2<:Real, T<:AbstractVector{T2}}
+    ) where {T2<:AbstractFloat, T<:AbstractVector{T2}}
 
     if clip_vloss
         v_loss_unclipped = (newvalue .- returns).^2
@@ -198,9 +197,8 @@ function train_batch!(
     return map(mean, loss_tup)
 end
 
-function rollout!(env, buffer, ac, traj_len, device)
-    # infer device from ac?
-    
+function rollout!(env, buffer, ac, traj_len)
+    device = buffer.s isa CuArray ? gpu : cpu
     for traj_step in 1:traj_len
         s = observe(env) |> stack .|> Float32 |> device
         (a, a_logprob, _, value) = get_actionvalue(ac, s)
@@ -215,72 +213,25 @@ end
 
 function gae!(buffer::Buffer, last_value, discount, gae_lambda)
     last_advantage = similar(buffer.advantages, size(buffer.advantages,1)) .= 0
-    
-    itrs = eachcol.((
-        buffer.advantages, 
-        buffer.r, 
-        buffer.done, 
-        buffer.value
-    ))
-
+    itrs = eachcol.((buffer.advantages, buffer.r, buffer.done, buffer.value))
     for (advantages, r, done, value) in Iterators.reverse(zip(itrs...))
         td = r .+ discount * (.!done .* last_value) .- value
         advantages .= td .+ (discount*gae_lambda) * (.!done .* last_advantage)
         last_value, last_advantage = value, advantages
     end
-
     buffer.returns .= buffer.advantages .+ buffer.value
     nothing
 end
 
-function solve(
-    env::Union{CommonRLInterface.AbstractEnv, CommonRLInterface.Wrappers.AbstractWrapper}, 
-    solver::PPOSolver
-    )    
-
+function solve(solver::PPOSolver)
     @unpack_PPOSolver solver
 
-    @assert isa(base_env(env), MultiEnv) "This PPO algorithm is only designed to work on RLEnvTools.MultiEnv environments"
+    @assert isa(unwrapped(env), MultiEnv) "This PPO algorithm is only designed to work on RLEnvTools.MultiEnv environments"
+    @assert device in [cpu, gpu] "device must either be Flux.gpu or Flux.cpu"
 
     n_envs = length(terminated(env))
     n_transitions = Int64(n_envs*solver.traj_len)
     @assert iszero(n_transitions%batch_size) "traj_len*n_envs not divisible by batch_size"
-
-    acts = first(actions(env)) # first because multienv
-    actionspace = SpaceStyle(acts)
-    if actionspace isa FiniteSpaceStyle
-        @assert sort(collect(acts))==collect(1:length(acts)) "actions(env) should correspond to action indices."
-
-        ac = DiscreteActorCritic(env; solver.shared_dims, solver.actor_dims, solver.critic_dims)
-    elseif actionspace isa ContinuousSpaceStyle
-        lb = all(bounds(acts)[1] .≈ -1)
-        ub = all(bounds(acts)[2] .≈ 1)
-        @assert solver.squash&&lb&&ub "Squash is active, but action bounds are not [-1, 1]"
-
-        ac = ContinuousActorCritic(env; solver.shared_dims, solver.actor_dims, solver.critic_dims, solver.squash)
-    else
-        @assert false "Action space is not finite or continous (see CommonRLSpaces)."
-    end
-
-    buffer = Buffer(env, solver.traj_len)
-
-    opt_0 = Flux.Optimisers.OptimiserChain(
-        Flux.Optimisers.ClipNorm(solver.max_grad_norm), 
-        Flux.Optimisers.Adam(solver.lr)
-    )
-
-    ppo(env, ac, opt_0, buffer, solver)
-end
-
-function ppo(
-    env::Union{MultiEnv, CommonRLInterface.Wrappers.AbstractWrapper}, 
-    ac::ActorCritic,
-    opt_0,
-    buffer::Buffer,
-    solver::PPOSolver
-    )
-
-    @unpack_PPOSolver solver
 
     start_time = time()
     info = Logger()
@@ -289,7 +240,6 @@ function ppo(
     seed!(rng, seed)
     reset!(env)
 
-    device = (device == "gpu") ? gpu : cpu
     learning_rate = lr
 
     buffer = buffer |> device
@@ -299,7 +249,7 @@ function ppo(
     prog = Progress(n_steps)
     n_transitions = Int64(length(terminated(env))*traj_len)
     for global_step in n_transitions:n_transitions:n_steps
-        last_value = rollout!(env, buffer, ac, traj_len, device)
+        last_value = rollout!(env, buffer, ac, traj_len)
         gae!(buffer, last_value, discount, gae_lambda)
 
         if lr_decay
