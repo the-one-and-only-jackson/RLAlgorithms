@@ -5,6 +5,9 @@ using Random: AbstractRNG, default_rng
 using CommonRLInterface
 using CUDA
 
+using ..Spaces
+using ..MultiEnv
+
 export 
     ActorCritic,
     get_actionvalue,
@@ -42,6 +45,14 @@ Flux.@functor ContinuousActorCritic
 Constructors
 """
 
+function ActorCritic(env; kwargs...)
+    if SpaceStyle(actions(env)) == ContinuousSpaceStyle()
+        return ContinuousActorCritic(env; kwargs...)
+    else
+        "ERROR: Actor crtic construction"
+    end
+end
+
 function DiscreteActorCritic(env; rng=default_rng(), kwargs...)
     if terminated(env) isa Vector
         ns = length(first(observe(env)))
@@ -56,18 +67,9 @@ function DiscreteActorCritic(env; rng=default_rng(), kwargs...)
     return DiscreteActorCritic(shared, actor, critic, rng)
 end
 
-function ContinuousActorCritic(env; rng=default_rng(), log_std_init=-0.5, squash=false, kwargs...)
-    if terminated(env) isa Vector
-        ns = length(first(observe(env)))
-    else
-        ns = length(observe(env))
-    end
-    
-    if actions(env) isa Vector{<:Vector}
-        na = length(actions(env))
-    else
-        na = 1
-    end
+function ContinuousActorCritic(env::AbstractMultiEnv; rng=default_rng(), log_std_init=-0.5, squash=false, kwargs...)
+    ns = length(single_observations(env))
+    na = length(single_actions(env))
 
     shared, actor, critic = feedforward_feature(ns, na; kwargs...)
 

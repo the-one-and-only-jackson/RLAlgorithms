@@ -2,15 +2,14 @@ module PPO
 
 using CommonRLInterface, Flux, ProgressMeter, Parameters
 using CommonRLInterface.Wrappers: QuickWrapper
-using CommonRLSpaces
 
 using Random: default_rng, seed!, randperm
 using Statistics: mean, std
 using ChainRules: ignore_derivatives, @ignore_derivatives
 
-using RLEnvTools
-
 using ..ActorCritics
+using ..Spaces
+using ..MultiEnv
 
 export 
     solve,
@@ -29,11 +28,11 @@ end
 
 Flux.@functor Buffer
 
-function Buffer(env, traj_len)
-    na = length(rand(actions(env)))
-    a_type = SpaceStyle(actions(env)) isa FiniteSpaceStyle ? Int64 : Float32
-    n_envs = length(terminated(env))
-    s_size = size(first(observe(env)))
+function Buffer(env::AbstractMultiEnv, traj_len)
+    n_envs = length(env)
+    na = length(single_actions(env))
+    a_type = eltype(single_actions(env))
+    s_size = size(single_observations(env))
 
     return Buffer(
         zeros(Float32, s_size..., n_envs, traj_len),
@@ -73,10 +72,7 @@ function (logger::Logger)(x_val; kwargs...)
 end
 
 @with_kw struct PPOSolver
-    env::AbstractEnv
-    buffer::Buffer = Buffer(env, traj_len)
-    opt_0 = Flux.Optimisers.Adam(lr)
-    ac::ActorCritic = Actorcritic(env) 
+    env::AbstractMultiEnv
     n_steps::Int64 = 1_000_000
     lr::Float32 = 3f-4
     lr_decay::Bool = true
@@ -90,12 +86,12 @@ end
     norm_advantages::Bool = true
     ent_coef::Float32 = 0
     vf_coef::Float32 = 0.5f0
-    max_grad_norm::Float32 = 0.5
-    rng=default_rng()
+    rng = default_rng()
     seed::Int64 = 0
     device::Function = cpu # cpu or gpu
     kl_targ::Float64 = 0.02
-    action_space::String = "auto"
+    opt_0 = Flux.Optimisers.Adam(lr)
+    ac::ActorCritic = ActorCritic(env) 
 end
 
 function policy_loss_fun(
@@ -144,6 +140,7 @@ function train_batch!(
         buffer::Buffer, 
         solver::PPOSolver
     )
+
     @unpack_PPOSolver solver
 
     loss_tup = (
@@ -154,6 +151,8 @@ function train_batch!(
         clip_frac   = Float32[],
         kl_est      = Float32[]
     )
+
+    buffer = flatten(buffer, 2)
 
     mini_b::typeof(buffer) = fmap(x->similar(x, size(x)[1:end-1]..., batch_size), buffer)
 
@@ -197,8 +196,7 @@ function train_batch!(
     return map(mean, loss_tup)
 end
 
-function rollout!(env, buffer, ac, traj_len)
-    device = buffer.s isa CuArray ? gpu : cpu
+function rollout!(env, buffer, ac, traj_len, device)
     for traj_step in 1:traj_len
         s = observe(env) |> stack .|> Float32 |> device
         (a, a_logprob, _, value) = get_actionvalue(ac, s)
@@ -226,7 +224,6 @@ end
 function solve(solver::PPOSolver)
     @unpack_PPOSolver solver
 
-    @assert isa(unwrapped(env), MultiEnv) "This PPO algorithm is only designed to work on RLEnvTools.MultiEnv environments"
     @assert device in [cpu, gpu] "device must either be Flux.gpu or Flux.cpu"
 
     n_envs = length(terminated(env))
@@ -242,14 +239,17 @@ function solve(solver::PPOSolver)
 
     learning_rate = lr
 
-    buffer = buffer |> device
+    buffer = Buffer(env, traj_len) |> device
     ac = ac |> device
     opt = Flux.setup(opt_0, ac)
 
     prog = Progress(n_steps)
     n_transitions = Int64(length(terminated(env))*traj_len)
     for global_step in n_transitions:n_transitions:n_steps
-        last_value = rollout!(env, buffer, ac, traj_len)
+        # BIG EDIT
+        discount = Float32(0.97 * (1 - global_step/n_steps))
+
+        last_value = rollout!(env, buffer, ac, traj_len, device)
         gae!(buffer, last_value, discount, gae_lambda)
 
         if lr_decay
@@ -258,7 +258,7 @@ function solve(solver::PPOSolver)
         end
 
         for epoch in 1:n_epochs
-            loss_info = train_batch!(ac, opt, flatten(buffer, 2), solver)
+            loss_info = train_batch!(ac, opt, buffer, solver)
 
             if epoch == n_epochs || loss_info.kl_est > kl_targ
                 info(global_step; loss_info...)

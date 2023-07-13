@@ -1,6 +1,6 @@
 module Spaces
 
-using StaticArrays
+using StaticArrays, Distributions
 
 export
     FiniteSpaceStyle,
@@ -11,7 +11,8 @@ export
     Box,
     product,
     MultiAgentArraySpace,
-    Discrete
+    Discrete,
+    DistributionSpace
 
 
 abstract type AbstractSpaceStyle end
@@ -23,6 +24,8 @@ SpaceStyle(::Any) = UnknownSpaceStyle()
 
 abstract type NumericArraySpace{T<:Number} end
 Base.eltype(::NumericArraySpace{T}) where T = T
+
+Base.length(s::NumericArraySpace) = prod(size(s))
 
 struct Box{T} <: NumericArraySpace{T}
     lower::SArray
@@ -78,6 +81,15 @@ end
 SpaceStyle(space::MultiAgentArraySpace) = SpaceStyle(space.base_space)
 Base.size(space::MultiAgentArraySpace) = (size(space.base_space)..., space.n_agents)
 
+
+struct DistributionSpace{T} <: NumericArraySpace{T}
+    d::Distribution
+end
+function DistributionSpace(d::Distribution)
+    return DistributionSpace{eltype(d)}(d)
+end
+Base.size(d::DistributionSpace) = (length(d.d),)
+SpaceStyle(::DistributionSpace) = ContinuousSpaceStyle() # BAD! Wrong! Fix later!
 
 
 end

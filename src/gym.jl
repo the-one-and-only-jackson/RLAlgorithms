@@ -2,6 +2,7 @@ module Gym
 
 using CommonRLInterface
 import ..Spaces
+using ..MultiEnv
 
 export
     gym_env_list,
@@ -105,7 +106,7 @@ end
 """ 
 VecGymEnv
 """
-struct VecGymEnv <: AbstractEnv
+struct VecGymEnv <: AbstractMultiEnv
     name::String
     env
     actions::Spaces.NumericArraySpace
