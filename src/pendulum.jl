@@ -1,14 +1,18 @@
+module Pendulums
+
 using ControlSystems: ss, c2d, lqr
 using Parameters: @with_kw
 using LinearAlgebra: I, diagm
 using StaticArrays: SA
-using Distributions
+using Distributions: Distribution, Normal, MvNormal
 using CommonRLInterface
 
 using RLAlgorithms.Spaces
 
+export CartPole_params, CartPole, PendSim
+
 # http://www.it.uu.se/edu/course/homepage/regtek2/v20/Labs/labassignment.pdf
-@with_kw struct Pend
+@with_kw struct CartPole_params
     M = 2.4
     m = 0.23
     l = 0.36
@@ -17,27 +21,46 @@ using RLAlgorithms.Spaces
     u_lim = 10
 end
 
-function pend_nl(p::Pend, x, u, w)
+function pend_dynamics(p::CartPole_params, x::AbstractArray, u::Real, w::AbstractArray)
+    @unpack_CartPole_params p
+
     y, theta, d_y, d_theta = x
 
-    u = clamp(u[], -p.u_lim, p.u_lim)
+    F = clamp(u, -u_lim, u_lim)
 
-    mass_mat = SA[p.M+p.m p.m*p.l*cos(theta); p.m*p.l*cos(theta) p.m*p.l^2]
-    forces = SA[0, -p.f_theta*d_theta] + SA[u, 0] + w
-    RHS = p.m*p.l*sin(theta) * [d_theta^2, p.g]
+    mass_mat = SA[M+m m*l*cos(theta); m*l*cos(theta) m*l^2]
+    forces = SA[0, -f_theta*d_theta] + SA[F, 0] + w
+    RHS = m*l*sin(theta) * [d_theta^2, g]
     dd_x = mass_mat \ (RHS + forces)
 
-    dxdt = [d_y; d_theta; dd_x]
+    dxdt = SA[d_y; d_theta; dd_x]
 
     return dxdt
 end
 
-function pend_K(; p=Pend(), dt=0.01)
+@with_kw struct CartPole
+    params::CartPole_params = CartPole_params()
+    x::AbstractArray = zeros(4)
+end
+
+function step!(cp::CartPole, u::Real, w::AbstractArray{<:Real}, dt::Real)
+    cp.x .+= dt * pend_dynamics(cp.params, cp.x, u, w)
+    nothing
+end
+
+function set!(cp::CartPole, x)
+    cp.x .= x
+    nothing
+end
+
+function pend_K(; p=CartPole_params(), dt=0.01)
+    @unpack_Pend p
+
     A = [0 0 1 0; 
         0 0 0 1; 
-        0 -p.m*p.g/p.M 0 p.f_theta*p.m/p.M;
-        0 (p.M+p.m)*p.g/(p.l*p.M) 0 -(p.M+p.m)*p.f_theta/(p.M*p.m*p.l^2)]
-    B = [0, 0, 1/p.M, -1/(p.l*p.M)]
+        0 -m*g/M 0 f_theta*m/M;
+        0 (M+m)*g/(l*M) 0 -(M+m)*f_theta/(M*m*l^2)]
+    B = [0, 0, 1/M, -1/(l*M)]
 
     sys = ss(A,B,I,zeros(4,1))
     sys_d = c2d(sys, dt)
@@ -49,35 +72,35 @@ function pend_K(; p=Pend(), dt=0.01)
     return K
 end
 
-@with_kw mutable struct PendSim <: AbstractEnv
-	t::Float64 = 0.0
+struct LQR_controller
+    K::AbstractMatrix{<:Real}
+end
+(C::LQR_controller)(x) = -K*x
+
+@with_kw struct PendSim <: AbstractEnv
     dt::Float64 = 0.01
-    p::Pend = Pend()
-    x::Vector{Float64} = zeros(4)
-    K::Matrix{Float64} = pend_K(; p, dt)
+    p::CartPole = CartPole()
+    controller = LQR_controller(pend_K(; p, dt))
     noise::Distribution = Normal(0, 0.1f0)
     x0::Distribution = MvNormal([1, 0.1, 1, 1])
 end
 
-CommonRLInterface.act!(env::PendSim, a::Vector) = act!(env, a[])
+CommonRLInterface.act!(env::PendSim, a::AbstractVector) = act!(env, a[])
 function CommonRLInterface.act!(env::PendSim, a::Number)
     w = [0; a]
-    u = -env.K * env.x
-    env.x .+= env.dt * pend_nl(env.p, env.x, u, w)
-    env.t += env.dt
+    u = env.controller(env.p.x)[]
+    step!(env.p, u, w, env.dt)
     return 0
 end
 
 function CommonRLInterface.reset!(env::PendSim)
-    env.t = 0.0
-    env.x .= rand(env.x0)
+    set!(env.p, rand(env.x0))
     nothing
 end
 
 CommonRLInterface.actions(env::PendSim) = DistributionSpace(env.noise)
+CommonRLInterface.observations(::PendSim) = Box(fill(-Inf,4), fill(Inf,4))
+CommonRLInterface.terminated(env::PendSim) = abs(env.p.x[2]) > 0.3
+CommonRLInterface.observe(env::PendSim) = copy(env.p.x)
 
-CommonRLInterface.observations(env::PendSim) = Box(-Inf*ones(5), Inf*ones(5))
-
-CommonRLInterface.terminated(env::PendSim) = abs(env.x[2]) > 0.3
-
-CommonRLInterface.observe(env::PendSim) = [env.t; env.x] .|> Float32
+end
