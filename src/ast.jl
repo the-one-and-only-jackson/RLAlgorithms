@@ -27,7 +27,7 @@ function RL.reset!(e::AST_distributional)
     if !isempty(e.info[:steps])
         dist = actions(e.env).d
         max_likelihood = loglikelihood(dist, mean(dist))
-        e.info[:likelihood][end] += (e.n_steps - e.info[:steps]) * max_likelihood
+        e.info[:likelihood][end] += (e.n_steps - e.info[:steps][end]) * max_likelihood
     end
 
     for vec in values(e.info)
@@ -80,9 +80,9 @@ function RL.actions(e::AST_distributional)
     return Box(fill(-Inf32,N), fill(Inf32,N))
 end
 
-RL.observations(e::AST_distributional) = product(Box(0, Inf32), observations(e.env))
+RL.observations(e::AST_distributional) = product(Box([0], [Inf32]), observations(e.env))
 
-RL.observe(e::AST_distributional) = [e.info.steps[end]; observe(e.env)]
+RL.observe(e::AST_distributional) = [e.info[:steps][end]; observe(e.env)]
 
 RL.terminated(e::AST_distributional) = terminated(e.env) || time_limit(e)
 

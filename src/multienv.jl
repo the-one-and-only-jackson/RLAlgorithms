@@ -15,21 +15,6 @@ const RL = CommonRLInterface
 
 abstract type AbstractMultiEnv <: AbstractEnv end
 
-function envs(::AbstractMultiEnv) end
-
-Base.length(e::AbstractMultiEnv) = length(envs(e))
-
-RL.reset!(e::AbstractMultiEnv) = reset!.(envs(e))
-RL.observe(e::AbstractMultiEnv) = observe.(envs(e))
-RL.terminated(e::AbstractMultiEnv) = terminated.(envs(e))
-
-RL.actions(e::AbstractMultiEnv) = MultiAgentArraySpace(single_actions(e), length(e))
-RL.observations(e::AbstractMultiEnv) = MultiAgentArraySpace(single_observations(e), length(e))
-
-single_actions(e::AbstractMultiEnv) = actions(first(envs(e)))
-single_observations(e::AbstractMultiEnv) = observations(first(envs(e)))
-
-
 struct VecEnv <: AbstractMultiEnv
     envs::Vector{AbstractEnv}
     dones::Vector{Bool}
@@ -38,34 +23,46 @@ end
 
 function VecEnv(env_fcn::Function; n_envs=1, auto_reset=true)
     envs = [env_fcn() for _ in 1:n_envs]
-    dones = terminated.(envs)
+    dones = fill(false, n_envs)
     return VecEnv(envs, dones, auto_reset)
 end
 
-envs(e::VecEnv) = e.envs
+Base.length(e::VecEnv) = length(e.envs)
+
+function RL.reset!(e::VecEnv)
+    reset!.(e.envs)
+    e.dones .= terminated.(e.envs)
+    nothing
+end
 
 function RL.act!(e::VecEnv, a)
     r = vecEnvAct!(e, a)
-    e.dones .= terminated.(envs(e))
+    e.dones .= terminated.(e.envs)
     if e.auto_reset
-        reset!.(envs(e)[e.dones])
+        reset!.(e.envs[e.dones])
     end
     return r
 end
 function vecEnvAct!(e::VecEnv, a::Vector)
-    @assert length(envs(e))==length(a) "Number of actions does not match number of envs."
-    r = act!.(envs(e), a)
+    @assert length(e.envs)==length(a) "Number of actions does not match number of envs."
+    r = act!.(e.envs, a)
     return r
 end
 function vecEnvAct!(e::VecEnv, a::Array)
     dims = ndims(a)
-    @assert length(envs(e))==size(a, dims) "Number of actions does not match number of envs."
-    r = act!.(envs(e), eachslice(a; dims))
+    @assert length(e.envs)==size(a, dims) "Number of actions does not match number of envs."
+    r = act!.(e.envs, eachslice(a; dims))
     return r
 end 
 
 RL.terminated(e::VecEnv) = e.dones
+RL.observe(e::VecEnv) = observe.(e.envs)
 
+RL.actions(e::VecEnv) = MultiAgentArraySpace(single_actions(e), length(e))
+RL.observations(e::VecEnv) = MultiAgentArraySpace(single_observations(e), length(e))
+
+single_actions(e::VecEnv) = actions(first(e.envs))
+single_observations(e::VecEnv) = observations(first(e.envs))
 
 
 end

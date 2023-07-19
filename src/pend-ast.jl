@@ -1,13 +1,16 @@
 using Revise
 
+using Statistics: mean, std
+
 using RLAlgorithms.MultiEnv: VecEnv
-using RLAlgorithms.PPO: solve
+using RLAlgorithms.PPO: solve, PPOSolver
+using RLAlgorithms.MultiEnvWrappers: ObsNorm, unwrapped
 
 includet("pendulum.jl")
-using Pendulum: PendSim
+using .Pendulums: PendSim
 
 includet("ast.jl")
-using AST: AST_distributional
+using .AST: AST_distributional
 
 using Plots: plot, plot!, savefig
 
@@ -27,23 +30,24 @@ function get_mean_std(x_data, y_data; nx = 500, k = 5)
     return x, y_mean, y_std
 end
 
-function run_exp()
+function run_exp(; seed=0, terminal_cost=1000)
     env = VecEnv(n_envs=8) do 
-        AST_distributional(; env=PendSim(), n_steps=100)
-    end
+        AST_distributional(; env=PendSim(), n_steps=100, terminal_cost)
+    end |> ObsNorm
 
     solver = PPOSolver(;
         env,
-        n_steps = 2_500_000,
+        n_steps = 5_000_000,
         lr = 3f-4,
-        lr_decay = false,
+        lr_decay = true,
+        vf_coef = 1,
         traj_len = 128,
         batch_size = 128,
         n_epochs = 10,
         discount = 0.99f0,
         gae_lambda = 1f0, # 1.0 corresponds to not using GAE
         norm_advantages = true,
-        seed = 0,
+        seed,
         kl_targ = 0.02
     )
 
@@ -51,6 +55,53 @@ function run_exp()
 
     return env, ac, info
 end
+
+# plot([plot(x,y; label=false, title) for (title,(x,y)) in info]...)
+
+for terminal_cost in [500, 1000, 5000, 10000]
+    results = [run_exp(; seed, terminal_cost) for seed in 0:9]
+
+    p = plot()
+    for (env,_,_) in results
+        env_info = Dict()
+        for e in unwrapped(env).envs, (key, val) in e.info
+            dst = get!(env_info, key, eltype(val)[])
+            if key == :steps
+                val = length(env)*cumsum(val)
+            end
+            append!(dst, val)
+        end
+
+        x, y_mean, y_std = get_mean_std(env_info[:steps], env_info[:fail]; k=10)
+        plot!(p, x, y_mean, label=false, xlabel="Steps", title="Fails")
+    end
+    savefig(p, "src/fig/fail_cost_$terminal_cost.png")
+end
+
+function test_fail(env, n_steps)
+    reset!(env)
+    for _ in 1:n_steps
+        a = actions(env).d |> rand
+        act!(env, a)
+        terminated(env) && return true
+    end
+    return false
+end
+
+mean(test_fail(PendSim(), 100) for _ in 1:10_000)
+
+v = [sum(0.99^j for j in 0:i) for i = 0:99]
+mean(v)
+std(v)
+# do reward scaling
+r_mean = -entropy(dist)
+(r - r_mean*mean(v)) / (mean(v)*std(v))
+
+####
+
+x, y_mean, y_std = get_mean_std(step_vec, likelihood_vec; k=10)
+plot!(p1, x, y_mean, label=false, xlabel="Steps", title="Sum Log Likelihood")
+
 
 
 ## this still needs to be edited

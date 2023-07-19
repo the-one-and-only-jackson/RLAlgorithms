@@ -33,7 +33,7 @@ function pend_dynamics(p::CartPole_params, x::AbstractArray, u::Real, w::Abstrac
     RHS = m*l*sin(theta) * [d_theta^2, g]
     dd_x = mass_mat \ (RHS + forces)
 
-    dxdt = SA[d_y; d_theta; dd_x]
+    dxdt = SA[d_y, d_theta, dd_x...]
 
     return dxdt
 end
@@ -53,8 +53,8 @@ function set!(cp::CartPole, x)
     nothing
 end
 
-function pend_K(; p=CartPole_params(), dt=0.01)
-    @unpack_Pend p
+function pend_K(; params=CartPole_params(), dt=0.01)
+    @unpack_CartPole_params params
 
     A = [0 0 1 0; 
         0 0 0 1; 
@@ -75,12 +75,12 @@ end
 struct LQR_controller
     K::AbstractMatrix{<:Real}
 end
-(C::LQR_controller)(x) = -K*x
+(C::LQR_controller)(x) = -C.K*x
 
 @with_kw struct PendSim <: AbstractEnv
     dt::Float64 = 0.01
     p::CartPole = CartPole()
-    controller = LQR_controller(pend_K(; p, dt))
+    controller = LQR_controller(pend_K(; p.params, dt))
     noise::Distribution = Normal(0, 0.1f0)
     x0::Distribution = MvNormal([1, 0.1, 1, 1])
 end

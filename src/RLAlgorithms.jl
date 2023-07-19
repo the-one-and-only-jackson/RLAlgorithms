@@ -4,6 +4,8 @@ include("spaces.jl")
 
 include("multienv.jl")
 
+include("multienv_wrapper.jl")
+
 # include("gym.jl")
 
 include("ActorCritics.jl")
