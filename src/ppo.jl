@@ -246,9 +246,8 @@ function solve(solver::PPOSolver)
     prog = Progress(n_steps)
     n_transitions = Int64(length(terminated(env))*traj_len)
     for global_step in n_transitions:n_transitions:n_steps
-        # discount = Float32(0.97 * (1 - global_step/n_steps))
-
         last_value = rollout!(env, buffer, ac, traj_len, device)
+        # gae!(buffer, last_value, Float32(discount ^ (1 - global_step/n_steps)), gae_lambda)
         gae!(buffer, last_value, discount, gae_lambda)
 
         if lr_decay
