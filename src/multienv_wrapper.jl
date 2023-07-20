@@ -4,11 +4,14 @@ using CommonRLInterface
 using ..MultiEnv
 
 using Statistics
+using Parameters: @with_kw
 
 export
     AbstractMultiWrapper,
     wrapped_env,
-    unwrapped
+    unwrapped,
+    ObsNorm,
+    RewTransform
 
 """
     AbstractWrapper
@@ -89,7 +92,8 @@ function (rs::RunningStats)(x)
     nothing
 end
 Statistics.mean(rs::RunningStats) = copy(rs.M)
-Statistics.std(rs::RunningStats) = (rs.k==1) ? zeros(eltype(rs.S), size(rs.S)) : sqrt.(1e-8 .+ rs.S / (rs.k - 1))
+Statistics.var(rs::RunningStats) = (rs.k==1) ? fill!(similar(rs.S), 0) : rs.S/(rs.k - 1)
+
 
 """ 
 ObsNorm
@@ -115,11 +119,34 @@ function CommonRLInterface.observe(wrap::ObsNorm)
 
     for s in s_in
         s .-= mean(wrap.obs_stats)
-        s ./= std(wrap.obs_stats)
+        s ./= sqrt.(var(wrap.obs_stats) .+ 1f-8)
         clamp!(s, -wrap.s_lim, wrap.s_lim)
     end
 
     return s_in
 end
+
+
+"""
+RewNorm
+"""
+@with_kw struct RewNorm <: AbstractMultiWrapper
+    env::AbstractMultiEnv
+    rew_stats::RunningStats = RunningStats(Float32, 1)
+    returns::Vector = zeros(Float32, length(env))
+    gamma::Float32 = 1
+    epsilon::Float32 = 1f-8
+end
+wrapped_env(e::RewNorm) = e.env
+
+function CommonRLInterface.act!(wrap::RewNorm, a)
+    r = act!(wrapped_env(wrap), a)
+    wrap.returns .= r .+ wrap.gamma * .!terminated(wrapped_env(wrap)) .* wrap.returns
+    wrap.rew_stats.(wrap.returns)
+    return r ./ sqrt.(var(wrap.rew_stats) .+ wrap.epsilon)
+end
+
+
+
 
 end

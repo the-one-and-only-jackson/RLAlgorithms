@@ -1,10 +1,11 @@
 using Revise
 
 using Statistics: mean, std
+using Plots: plot, plot!, savefig
 
 using RLAlgorithms.MultiEnv: VecEnv
 using RLAlgorithms.PPO: solve, PPOSolver
-using RLAlgorithms.MultiEnvWrappers: ObsNorm, unwrapped
+using RLAlgorithms.MultiEnvWrappers: ObsNorm, RewNorm, unwrapped
 
 includet("pendulum.jl")
 using .Pendulums: PendSim
@@ -12,7 +13,6 @@ using .Pendulums: PendSim
 includet("ast.jl")
 using .AST: AST_distributional
 
-using Plots: plot, plot!, savefig
 
 function get_mean_std(x_data, y_data; nx = 500, k = 5)
     x = (1:nx) * ceil(maximum(x_data)/nx)
@@ -35,17 +35,19 @@ function run_exp(; seed=0, terminal_cost=1000)
         AST_distributional(; env=PendSim(), n_steps=100, terminal_cost)
     end |> ObsNorm
 
+    env = RewNorm(; env, gamma=0.99)
+
     solver = PPOSolver(;
         env,
-        n_steps = 5_000_000,
+        n_steps = 1_000_000,
         lr = 3f-4,
-        lr_decay = true,
+        lr_decay = false,
         vf_coef = 1,
         traj_len = 128,
         batch_size = 128,
         n_epochs = 10,
         discount = 0.99f0,
-        gae_lambda = 1f0, # 1.0 corresponds to not using GAE
+        gae_lambda = 0.95f0, # 1.0 corresponds to not using GAE
         norm_advantages = true,
         seed,
         kl_targ = 0.02
@@ -87,7 +89,6 @@ function test_fail(env, n_steps)
     end
     return false
 end
-
 mean(test_fail(PendSim(), 100) for _ in 1:10_000)
 
 v = [sum(0.99^j for j in 0:i) for i = 0:99]
@@ -96,6 +97,58 @@ std(v)
 # do reward scaling
 r_mean = -entropy(dist)
 (r - r_mean*mean(v)) / (mean(v)*std(v))
+
+####
+
+# Notes:
+# GAE is huge! 0.95 performs much better than 1.0
+
+
+results = [run_exp(; seed, terminal_cost=1_000) for seed in 0:9]
+
+for key in [:fail, :likelihood, :KL]
+    p = plot()
+    for (env,_,_) in results
+        env_info = Dict()
+        for e in unwrapped(env).envs, (key, val) in e.info
+            dst = get!(env_info, key, eltype(val)[])
+            if key == :steps
+                val = length(env)*cumsum(val)
+            end
+            append!(dst, val)
+        end
+
+        x, y_mean, y_std = get_mean_std(env_info[:steps], env_info[key]; k=10)
+        plot!(p, x, y_mean, label=false, xlabel="Steps", title=key)
+    end
+    display(p)
+end
+
+
+using CommonRLInterface
+using Distributions
+-entropy(actions(PendSim()).d) * 100
+
+x0 = rand(MvNormal([1, 0.1, 1, 1]))
+
+env = AST_distributional(; env=PendSim(; x0=Dirac(x0)), n_steps=100, terminal_cost=1000)
+ac = results[5][2]
+reset!(env)
+s_vec, a_vec, r_vec = [], [], []
+while !terminated(env)
+    s = observe(env) .|> Float32
+    a = ac(s)
+    r = act!(env, a)
+    push!(s_vec, s)
+    push!(a_vec, a)
+    push!(r_vec, r)
+    nothing
+end
+a_dist_vec = [AST.unflatten(actions(env.env).d, a) for a in a_vec]
+μ = mean.(a_dist_vec)
+σ = std.(a_dist_vec)
+plot(μ+σ; fillrange=μ-σ)
+
 
 ####
 

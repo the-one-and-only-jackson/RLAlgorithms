@@ -2,7 +2,7 @@ module AST
 
 using CommonRLInterface
 using Parameters: @with_kw
-using Distributions: loglikelihood, Normal, MvNormal
+using Distributions: loglikelihood, Normal, MvNormal, entropy
 using Statistics: mean, std, cov
 
 using RLAlgorithms.Spaces: Box, product
@@ -25,9 +25,9 @@ end
 
 function RL.reset!(e::AST_distributional)
     if !isempty(e.info[:steps])
-        dist = actions(e.env).d
-        max_likelihood = loglikelihood(dist, mean(dist))
-        e.info[:likelihood][end] += (e.n_steps - e.info[:steps][end]) * max_likelihood
+        steps_togo = e.n_steps - e.info[:steps][end]
+        expected_rew = -entropy(actions(e.env).d)
+        e.info[:likelihood][end] += steps_togo * expected_rew
     end
 
     for vec in values(e.info)
