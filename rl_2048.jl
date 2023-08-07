@@ -1,6 +1,7 @@
 using CommonRLInterface
 using Parameters: @with_kw
 using Random: default_rng
+using StaticArrays: SA
 
 const RL = CommonRLInterface
 
@@ -15,7 +16,7 @@ end
 
 RL.observe(env::My2048) = env.board
 RL.terminated(env::My2048) = env.done
-RL.actions(::My2048) = [:up, :down, :left, :right]
+RL.actions(::My2048) = SA[:up, :down, :left, :right]
 RL.valid_action_mask(env::My2048) = env.valid_action_mask
 RL.valid_actions(env::My2048) = actions(env)[RL.valid_action_mask(env)]
 
@@ -94,14 +95,21 @@ function can_move_combine(v)
 end
 
 using CommonRLInterface.Wrappers: QuickWrapper
+using RLAlgorithms.Spaces: Discrete, Box
 
-QuickWrapper(
-    env;
-    actions = 1:4,
-    # observations = 
-    observe = env -> reshape(observe(env) |> log2, :),
+env = QuickWrapper(
+    My2048();
+    actions = Discrete(4),
+    observations = Box(fill(-Inf32, 16), fill(Inf32, 16)),
+    observe = env -> reshape(observe(env) .|> Float32, :),
     act! = (env,a) -> act!(env, actions(env)[a])
 )
+
+reset!(env)
+observe(env)
+act!(env, 4)
+actions(env) |> length
+valid_action_mask(env)
 
 # next:
 # wrapper to standardize actions/observations + spaces

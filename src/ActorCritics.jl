@@ -54,13 +54,8 @@ function ActorCritic(env; kwargs...)
 end
 
 function DiscreteActorCritic(env; rng=default_rng(), kwargs...)
-    if terminated(env) isa Vector
-        ns = length(first(observe(env)))
-    else
-        ns = length(observe(env))
-    end
-    
-    na = length(actions(env))
+    ns = length(single_observations(env))
+    na = length(single_actions(env))
 
     shared, actor, critic = feedforward_feature(ns, na; kwargs...)
 
