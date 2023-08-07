@@ -66,7 +66,7 @@ function Discrete(n::T) where {T<:Integer}
 end
 
 SpaceStyle(::Discrete) = FiniteSpaceStyle()
-Base.size(::Discrete) = (1,)
+Base.size(space::Discrete) = (length(space.base_space),)
 Base.length(space::Discrete) = length(space.base_space)
 
 

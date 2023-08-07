@@ -5,11 +5,16 @@ using RLAlgorithms.MultiEnv: VecEnv, AbstractMultiEnv
 using RLAlgorithms.PPO: solve, PPOSolver
 using RLAlgorithms.MultiEnvWrappers: ObsNorm, RewNorm, unwrapped
 
-includet("pendulum.jl")
-using .Pendulums: PendSim
+# include("pendulum.jl")
+# using .Pendulums: PendSim
 
-includet("ast.jl")
+include("cwh.jl")
+using .Satellites: CWHSim
+
+include("ast.jl")
 using .AST: AST_distributional
+
+
 
 
 function get_mean_std(x_data, y_data; nx = 500, k = 5)
@@ -238,7 +243,7 @@ function load_exp(exp_dir)
     return exp_data
 end
 
-exp_dir = joinpath("AST", "Experiments", "2023-07-20_3")
+exp_dir = joinpath("AST", "Experiments", "2023-07-27_1")
 exp_data = load_exp(exp_dir)
 
 p_vec = [plot() for _ in 1:3]
@@ -250,3 +255,46 @@ for (ii,p) in enumerate(p_vec)
 end
 
 
+
+
+
+
+
+
+using CommonRLInterface
+using CommonRLInterface.Wrappers: QuickWrapper
+using Distributions
+
+ac = exp_data[:ac][1]
+obs_stats = exp_data[:env][1].env.obs_stats
+μ = mean(obs_stats) .|> Float32
+σ = sqrt.(var(obs_stats)) .|> Float32
+env = QuickWrapper(
+    AST_distributional(; env=CWHSim(), n_steps=500, terminal_cost=5000), 
+    observe = env -> (observe(env)-μ)./σ
+)
+info = evaluate(env, ac)
+
+a_dist_vec = [AST.unflatten(actions(env.env.env).d, a) for a in info[:a]]
+
+p_vec = []
+for (ii, label) in enumerate(["Measurement", "Process"])
+    a = [x[ii] for x in mean.(a_dist_vec)]
+    b = [x[ii] for x in [sqrt.(x) for x in var.(a_dist_vec)]]
+    p = plot(a+b; fillrange=a-b, fillalpha = 0.35, linewidth=0, label)
+    push!(p_vec, p)
+end
+plot(p_vec...; layout=(2,1), xlabel="Time Steps")
+
+s_flat = (σ .* info[:s][5]) + μ
+
+
+
+env, ac = exp_data[:env][1], exp_data[:ac][1]
+reset!(env)
+while !terminated(env)
+    s = observe(env)
+    a = ac(s .|> Float32)
+end
+
+exp_data[:env][1].env.obs_stats

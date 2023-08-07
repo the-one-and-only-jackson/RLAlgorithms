@@ -78,15 +78,6 @@ function ContinuousActorCritic(env::AbstractMultiEnv; rng=default_rng(), log_std
     return ContinuousActorCritic(shared, actor, critic, log_std, rng, squash)
 end
 
-function mlp(dims, act_fun, hidden_init, head_init = nothing)
-    end_idx = isnothing(head_init) ? length(dims) : length(dims)-1
-    layers = Dense[Dense(dims[ii] => dims[ii+1], act_fun; init=hidden_init) for ii = 1:end_idx-1]
-    if !isnothing(head_init)
-        push!(layers, Dense(dims[end-1] => dims[end]; init=head_init))
-    end
-    return Chain(layers)
-end
-
 function feedforward_feature(ns, na;
     shared_dims = [], 
     actor_dims  = [64, 64],
@@ -111,6 +102,15 @@ function feedforward_feature(ns, na;
     critic = mlp(critic_dims, act_fun, hidden_init, critic_init)
 
     return shared, actor, critic
+end
+
+function mlp(dims, act_fun, hidden_init, head_init = nothing)
+    end_idx = isnothing(head_init) ? length(dims) : length(dims)-1
+    layers = Dense[Dense(dims[ii] => dims[ii+1], act_fun; init=hidden_init) for ii = 1:end_idx-1]
+    if !isnothing(head_init)
+        push!(layers, Dense(dims[end-1] => dims[end]; init=head_init))
+    end
+    return Chain(layers)
 end
 
 """

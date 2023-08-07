@@ -4,6 +4,7 @@ using CommonRLInterface
 using Parameters: @with_kw
 using Distributions: loglikelihood, Normal, MvNormal, entropy
 using Statistics: mean, std, cov
+using LinearAlgebra: tr, logdet
 
 using RLAlgorithms.Spaces: Box, product
 
@@ -74,6 +75,14 @@ end
 
 function kl_divergence(p::Normal, q::Normal)
     return log(q.σ/p.σ) + (p.σ^2 + (p.μ-q.μ)^2)/(2*q.σ^2) - 1//2
+end
+
+function kl_divergence(p::MvNormal, q::MvNormal)
+    du = mean(p) - mean(q)
+    a1 = du' * (cov(q) \ du)
+    a2 = tr(cov(q) \ cov(p))
+    a3 = logdet(cov(q)) - logdet(cov(p))
+    return (a1 - length(du) + a2 + a3)/2
 end
 
 function RL.actions(e::AST_distributional)

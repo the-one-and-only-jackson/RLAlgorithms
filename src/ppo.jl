@@ -232,7 +232,6 @@ function solve(solver::PPOSolver)
 
     start_time = time()
     info = Logger()
-    global_step = 0
 
     seed!(rng, seed)
     reset!(env)
