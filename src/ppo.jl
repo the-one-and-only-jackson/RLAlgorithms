@@ -15,57 +15,57 @@ export
     solve,
     PPOSolver
 
-struct Buffer{Ts<:AbstractArray,Ta<:AbstractArray,Tr<:AbstractArray,Td<:AbstractArray{Bool}}
-    s::Ts
-    a::Ta
-    a_logprob::Tr
-    r::Tr
-    done::Td
-    value::Tr
-    advantages::Tr
-    returns::Tr
+@with_kw struct Buffer
+    s
+    a
+    r = zeros(Float32, size(s)[end-1:end])
+    done = zeros(Bool, size(s)[end-1:end])
+    a_logprob = copy(r)
+    value = copy(r)
+    advantages = copy(r)
+    returns = copy(r)
+end
+function Buffer(env::AbstractMultiEnv, traj_len::Int)
+    n_envs = length(env)
+    s_sz = size(single_observations(env))
+    a_sz = size(single_actions(env))
+    a_T = eltype(single_actions(env))
+
+    s = zeros(Float32, s_sz..., n_envs, traj_len)
+    a = zeros(a_T, a_sz..., n_envs, traj_len)
+
+    return Buffer(; s, a)
 end
 
 Flux.@functor Buffer
 
-function Buffer(env::AbstractMultiEnv, traj_len)
-    n_envs = length(env)
-    na = length(single_actions(env))
-    a_type = eltype(single_actions(env))
-    s_size = size(single_observations(env))
-
-    return Buffer(
-        zeros(Float32, s_size..., n_envs, traj_len),
-        zeros(a_type, na, n_envs, traj_len),
-        zeros(Float32, n_envs, traj_len),
-        zeros(Float32, n_envs, traj_len),
-        zeros(Bool, n_envs, traj_len),
-        zeros(Float32, n_envs, traj_len),
-        zeros(Float32, n_envs, traj_len),
-        zeros(Float32, n_envs, traj_len)
-    )
+function sample_batch!(dst::Buffer, src::Buffer, idxs)
+    copy_fun(x, y) = copyto!(x, selectdim(y, ndims(y), idxs))
+    fmap(copy_fun, dst, src)
 end
 
-flatten(b::Buffer, N) = fmap(x->reshape(x, size(x)[1:end-N]..., :), b)
-
-function send_to!(buffer::Buffer, idx; kwargs...)
+function send_to!(buffer::Buffer, idx::Int; kwargs...)
     for (key, val) in kwargs
         arr = getfield(buffer, key)
-        arr_view = selectdim(arr, length(size(arr)), idx)
-        copyto!(arr_view, val)
+        copyto!(selectdim(arr, ndims(arr), idx), val)
     end
     nothing
 end
 
-
-struct Logger{T}
-    log::Dict{Symbol, T}
+@with_kw struct Logger{T}
+    log = Dict{Symbol, T}()
 end
-Logger() = Logger(Dict{Symbol, Tuple{Vector, Vector}}())
-function (logger::Logger)(x_val; kwargs...)
+function (logger::Logger{Tuple{Vector, Vector}})(x_val; kwargs...)
     for (key, val) in kwargs
         x_vec, y_vec = get!(logger.log, key, (typeof(x_val)[], typeof(val)[]))
         push!(x_vec, x_val)
+        push!(y_vec, val)
+    end
+    nothing
+end
+function (logger::Logger{Vector})(; kwargs...)
+    for (key, val) in kwargs
+        y_vec = get!(logger.log, key, typeof(val)[])
         push!(y_vec, val)
     end
     nothing
@@ -81,8 +81,7 @@ end
     n_epochs::Int64 = 10
     discount::Float32 = 0.99f0
     gae_lambda::Float32 = 1f0 # 1.0 corresponds to not using GAE
-    clip_coef::Float32 = 0.2f0
-    clip_vloss::Bool = false
+    clip_coef::Float32 = 0.5f0
     norm_advantages::Bool = true
     ent_coef::Float32 = 0
     vf_coef::Float32 = 0.5f0
@@ -92,108 +91,56 @@ end
     kl_targ::Float64 = 0.02
     opt_0 = Flux.Optimisers.Adam(lr)
     ac::ActorCritic = ActorCritic(env) 
+    
+    @assert device in [cpu, gpu]
+    @assert iszero(n_transitions%batch_size) "traj_len*n_envs not divisible by batch_size"
 end
 
-function policy_loss_fun(
-    a_logprob::T, 
-    newlogprob::T, 
-    advantages::T, 
-    clip_coef::T2
-    ) where {T2<:Real, T<:AbstractVector{T2}}
-
-    log_ratio = newlogprob .- a_logprob
-    ratio = exp.(log_ratio)
-    pg_loss1 = -advantages .* ratio
-    pg_loss2 = -advantages .* clamp.(ratio, 1-clip_coef, 1+clip_coef)
-    policy_batch_loss = mean(max.(pg_loss1, pg_loss2))
-
-    clip_fracs = @ignore_derivatives mean(abs.(ratio .- 1) .> clip_coef)
-    kl_est = @ignore_derivatives mean((ratio .- 1) .- log_ratio)
-
-    return policy_batch_loss, clip_fracs, kl_est
-end
-
-function value_loss_fun(
-    values::T, 
-    newvalue::T, 
-    returns::T, 
-    clip_vloss::Bool, 
-    clip_coef::T2
-    ) where {T2<:AbstractFloat, T<:AbstractVector{T2}}
-
-    if clip_vloss
-        v_loss_unclipped = (newvalue .- returns).^2
-        v_clipped = values .+ clamp.(newvalue .- values, -clip_coef, clip_coef)
-        v_loss_clipped = (v_clipped .- returns).^2
-        v_loss_max = max.(v_loss_unclipped, v_loss_clipped)
-        value_batch_loss = mean(v_loss_max)/2
-    else
-        value_batch_loss = Flux.mse(newvalue, returns)/2
-    end
-
-    return value_batch_loss
-end
-
-function train_batch!(
-        ac::ActorCritic,
-        opt,
-        buffer::Buffer, 
-        solver::PPOSolver
-    )
-
+function solve(solver::PPOSolver)
     @unpack_PPOSolver solver
 
-    loss_tup = (
-        policy_loss = Float32[],
-        value_loss  = Float32[],
-        entropy_loss= Float32[],
-        total_loss  = Float32[],
-        clip_frac   = Float32[],
-        kl_est      = Float32[]
-    )
+    n_transitions = Int64(length(env)*traj_len)
 
-    buffer = flatten(buffer, 2)
+    start_time = time()
+    info = Logger{Tuple{Vector, Vector}}()
 
-    mini_b::typeof(buffer) = fmap(x->similar(x, size(x)[1:end-1]..., batch_size), buffer)
+    seed!(rng, seed)
+    reset!(env)
 
-    for idxs in Iterators.partition(randperm(size(buffer.done,1)), batch_size)
-        # copyto!(mini_b, buffer, idxs)
-        copyfun(b1, b2) = copyto!(b1, selectdim(b2, ndims(b2), idxs))
-        fmap(copyfun, mini_b, buffer)
+    buffer, ac = (Buffer(; env, traj_len), ac) .|> device
+    opt = Flux.setup(opt_0, ac)
 
-        if norm_advantages
-            advantages = (mini_b.advantages .- mean(mini_b.advantages)) / (std(mini_b.advantages) + 1f-8)
-        else
-            advantages = mini_b.advantages
-        end
+    # used for training
+    flat_buffer = fmap(x->reshape(x, size(x)[1:end-2]..., :), buffer)
+    mini_buffer = fmap(x->similar(x, size(x)[1:end-1]..., batch_size), flat_buffer)
 
-        grads = Flux.gradient(ac) do ac
-            (_, newlogprob, entropy, newvalue) = get_actionvalue(ac, mini_b.s, mini_b.a)
+    prog = Progress(n_steps)
+    for global_step in n_transitions:n_transitions:n_steps
+        last_value = rollout!(env, buffer, ac, traj_len, device)
+        gae!(buffer, last_value, discount, gae_lambda)
 
-            (policy_loss, clip_frac, kl_est) = policy_loss_fun(mini_b.a_logprob, newlogprob, advantages, clip_coef)
-            
-            value_loss = value_loss_fun(mini_b.value, newvalue, mini_b.returns, clip_vloss, clip_coef)
-            
-            entropy_loss = mean(entropy)
-            
-            total_loss = policy_loss - ent_coef*entropy_loss + vf_coef*value_loss
+        learning_rate = lr_decay ? (1-global_step/n_steps)*lr : lr
+        Flux.Optimisers.adjust!(opt, learning_rate)
 
-            ignore_derivatives() do
-                push!(loss_tup.policy_loss, policy_loss)
-                push!(loss_tup.value_loss, value_loss)
-                push!(loss_tup.entropy_loss, entropy_loss)
-                push!(loss_tup.total_loss, total_loss) 
-                push!(loss_tup.clip_frac, clip_frac)
-                push!(loss_tup.kl_est, kl_est)
+        for epoch in 1:n_epochs
+            loss_info = train_batch!(ac, opt, flat_buffer, mini_buffer, solver)
+
+            if epoch == n_epochs || loss_info.kl_est > kl_targ
+                info(global_step; loss_info...)
+                break
             end
-
-            return total_loss
         end
+        
+        info(global_step; learning_rate, wall_time = time() - start_time)
 
-        Flux.update!(opt, ac, grads[1])
+        next!(prog; 
+            step = n_transitions, 
+            showvalues = zip(keys(info.log), map(x->x[2][end], values(info.log)))
+        )
     end
+    finish!(prog)
 
-    return map(mean, loss_tup)
+    return cpu(ac), info.log
 end
 
 function rollout!(env, buffer, ac, traj_len, device)
@@ -221,58 +168,75 @@ function gae!(buffer::Buffer, last_value, discount, gae_lambda)
     nothing
 end
 
-function solve(solver::PPOSolver)
+function train_batch!(
+        ac::ActorCritic,
+        opt,
+        flat_buffer::Buffer, 
+        mini_buffer::Buffer,
+        solver::PPOSolver
+    )
+
     @unpack_PPOSolver solver
 
-    @assert device in [cpu, gpu] "device must either be Flux.gpu or Flux.cpu"
+    loss_info = Logger{Vector}()
 
-    n_envs = length(terminated(env))
-    n_transitions = Int64(n_envs*solver.traj_len)
-    @assert iszero(n_transitions%batch_size) "traj_len*n_envs not divisible by batch_size"
+    for idxs in Iterators.partition(randperm(size(flat_buffer.done,1)), batch_size)
+        sample_batch!(mini_b, flat_buffer, idxs)
 
-    start_time = time()
-    info = Logger()
-
-    seed!(rng, seed)
-    reset!(env)
-
-    learning_rate = lr
-
-    buffer = Buffer(env, traj_len) |> device
-    ac = ac |> device
-    opt = Flux.setup(opt_0, ac)
-
-    prog = Progress(n_steps)
-    n_transitions = Int64(length(terminated(env))*traj_len)
-    for global_step in n_transitions:n_transitions:n_steps
-        last_value = rollout!(env, buffer, ac, traj_len, device)
-        # gae!(buffer, last_value, Float32(discount ^ (1 - global_step/n_steps)), gae_lambda)
-        gae!(buffer, last_value, discount, gae_lambda)
-
-        if lr_decay
-            learning_rate = (1-global_step/n_steps)*lr
-            Flux.Optimisers.adjust!(opt, learning_rate)
+        @unpack s, a, a_logprob, advantages = mini_buffer
+        if norm_advantages
+            advantages = normalize(mini_buffer.advantages)
         end
 
-        for epoch in 1:n_epochs
-            loss_info = train_batch!(ac, opt, buffer, solver)
+        grads = Flux.gradient(ac) do ac
+            (_, newlogprob, entropy, newvalue) = get_actionvalue(ac, s, a)
+            (policy_loss, clip_frac, kl_est) = policy_loss_fun(a_logprob, newlogprob, advantages, clip_coef)
+            value_loss = Flux.mse(newvalue, returns)/2
+            entropy_loss = mean(entropy)
+            total_loss = policy_loss - ent_coef*entropy_loss + vf_coef*value_loss
 
-            if epoch == n_epochs || loss_info.kl_est > kl_targ
-                info(global_step; loss_info...)
-                break
-            end
+            @ignore_derivatives loss_info(; 
+                policy_loss, value_loss, entropy_loss, total_loss, clip_frac, kl_est
+            )
+
+            return total_loss
         end
-        
-        info(global_step; learning_rate, wall_time = time() - start_time)
 
-        next!(prog; 
-            step = n_transitions, 
-            showvalues = zip(keys(info.log), map(x->x[2][end], values(info.log)))
-        )
+        Flux.update!(opt, ac, clip_grads(grads)[1])
     end
-    finish!(prog)
 
-    return cpu(ac), info.log
+    return map(mean, (; loss_info.log...))
 end
+
+function policy_loss_fun(
+    a_logprob::T, 
+    newlogprob::T, 
+    advantages::T, 
+    clip_coef::T2
+    ) where {T2<:Real, T<:AbstractVector{T2}}
+
+    log_ratio = newlogprob .- a_logprob
+    ratio = exp.(log_ratio)
+    pg_loss1 = -advantages .* ratio
+    pg_loss2 = -advantages .* clamp.(ratio, 1-clip_coef, 1+clip_coef)
+    policy_batch_loss = mean(max.(pg_loss1, pg_loss2))
+
+    clip_fracs = @ignore_derivatives mean(abs.(ratio .- 1) .> clip_coef)
+    kl_est = @ignore_derivatives mean((ratio .- 1) .- log_ratio)
+
+    return policy_batch_loss, clip_fracs, kl_est
+end
+
+function clip_grads(grads, thresh=0.5f0)
+    isinf(thresh) && return grads
+    grad_vec, model = Flux.Optimisers.destructure(grads)
+    l2 = norm(grad_vec)
+    if l2 > thresh
+        grad_vec *= (thresh / l2)
+    end
+    clip_grads = model(grad_vec)
+end
+
+normalize(x; eps = 1f-8) = (x .- mean(x)) / (std(x) + eps)
 
 end

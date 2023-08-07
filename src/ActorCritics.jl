@@ -48,8 +48,10 @@ Constructors
 function ActorCritic(env; kwargs...)
     if SpaceStyle(actions(env)) == ContinuousSpaceStyle()
         return ContinuousActorCritic(env; kwargs...)
+    elseif SpaceStyle(actions(env)) == FiniteSpaceStyle()
+        return DiscreteActorCritic(env; kwargs...)
     else
-        "ERROR: Actor crtic construction"
+        @assert false "ERROR: Actor crtic construction"
     end
 end
 
