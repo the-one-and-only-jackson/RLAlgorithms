@@ -68,6 +68,7 @@ end
 SpaceStyle(::Discrete) = FiniteSpaceStyle()
 Base.size(space::Discrete) = (length(space.base_space),)
 Base.length(space::Discrete) = length(space.base_space)
+Base.ndims(::Discrete) = 1
 
 
 struct MultiAgentArraySpace{T} <: NumericArraySpace{T}

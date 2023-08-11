@@ -2,6 +2,7 @@ module MultiEnvWrappers
 
 using CommonRLInterface
 using ..MultiEnv
+using ..Spaces: NumericArraySpace
 
 using Statistics
 using Parameters: @with_kw
@@ -11,7 +12,10 @@ export
     wrapped_env,
     unwrapped,
     ObsNorm,
-    RewTransform
+    RewTransform,
+    LoggingWrapper,
+    TransformWrapper,
+    RewNorm
 
 """
     AbstractWrapper
@@ -44,7 +48,7 @@ macro forward_to_wrapped(f)
 end
 
 @forward_to_wrapped CommonRLInterface.reset!
-@forward_to_wrapped CommonRLInterface.actions
+# @forward_to_wrapped CommonRLInterface.actions
 @forward_to_wrapped CommonRLInterface.observe
 @forward_to_wrapped CommonRLInterface.act!
 @forward_to_wrapped CommonRLInterface.terminated
@@ -54,7 +58,7 @@ end
 @forward_to_wrapped CommonRLInterface.setstate!
 @forward_to_wrapped CommonRLInterface.valid_actions
 @forward_to_wrapped CommonRLInterface.valid_action_mask
-@forward_to_wrapped CommonRLInterface.observations
+# @forward_to_wrapped CommonRLInterface.observations
 # not straightforward to provide clone
 
 @forward_to_wrapped CommonRLInterface.players
@@ -147,6 +151,60 @@ function CommonRLInterface.act!(wrap::RewNorm, a)
 end
 
 
+"""
+LoggingWrapper
+"""
+@with_kw struct LoggingWrapper <: AbstractMultiWrapper
+    env::AbstractMultiEnv
+    current_step::Vector{Int} = zeros(Int, length(env))
+    total_step = [0]
+    current_reward::Vector{Float32} = zeros(Int, length(env))
+    step::Vector{Int} = Int[]
+    episode_length::Vector{Int} = Int[]
+    reward::Vector{Float32} = Float32[]
+end
+LoggingWrapper(env) = LoggingWrapper(; env)
 
+wrapped_env(w::LoggingWrapper) = w.env
+
+function CommonRLInterface.act!(w::LoggingWrapper, a)
+    r = act!(w.env, a)
+
+    w.current_reward .+= r
+
+    w.current_step .+= 1
+    w.total_step[] += length(w.env)
+
+    dones = terminated(w.env)
+    n_done = count(dones)
+    if n_done > 0
+        append!(w.step, fill(w.total_step[], n_done))
+        append!(w.episode_length, w.current_step[dones])
+        append!(w.reward, w.current_reward[dones])
+        w.current_step[dones] .= 0
+        w.current_reward[dones] .= 0
+    end
+
+    return r
+end
+
+
+"""
+TransformWrapper
+"""
+@with_kw struct TransformWrapper <: AbstractMultiWrapper
+    env::AbstractMultiEnv
+    action_fun::Function = identity
+    single_actions::NumericArraySpace = single_actions(env)
+    observation_fun::Function = identity
+    single_observations::NumericArraySpace = single_observations(env)
+end
+wrapped_env(e::TransformWrapper) = e.env
+
+MultiEnv.single_actions(e::TransformWrapper) = e.single_actions
+CommonRLInterface.act!(e::TransformWrapper, a) = act!(e.env, a) .|> e.action_fun
+
+MultiEnv.single_observations(e::TransformWrapper) = e.single_observations
+CommonRLInterface.observe(e::TransformWrapper) = observe(e.env) |> e.observation_fun
 
 end

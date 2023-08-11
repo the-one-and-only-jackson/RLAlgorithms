@@ -6,7 +6,9 @@ using CommonRLInterface.Wrappers: QuickWrapper
 using Random: default_rng, seed!, randperm
 using Statistics: mean, std
 using ChainRules: ignore_derivatives, @ignore_derivatives
+using LinearAlgebra: norm
 
+using ..Utils
 using ..ActorCritics
 using ..Spaces
 using ..MultiEnv
@@ -21,54 +23,37 @@ export
     r = zeros(Float32, size(s)[end-1:end])
     done = zeros(Bool, size(s)[end-1:end])
     a_logprob = copy(r)
+    a_mask = nothing
     value = copy(r)
     advantages = copy(r)
     returns = copy(r)
 end
 function Buffer(env::AbstractMultiEnv, traj_len::Int)
     n_envs = length(env)
-    s_sz = size(single_observations(env))
-    a_sz = size(single_actions(env))
-    a_T = eltype(single_actions(env))
 
-    s = zeros(Float32, s_sz..., n_envs, traj_len)
-    a = zeros(a_T, a_sz..., n_envs, traj_len)
+    O = single_observations(env)
+    s = zeros(eltype(O), size(O)..., n_envs, traj_len)
 
-    return Buffer(; s, a)
+    A = single_actions(env)
+    if SpaceStyle(A) == ContinuousSpaceStyle()
+        a = zeros(eltype(A), size(A)..., n_envs, traj_len)
+    elseif SpaceStyle(A) == FiniteSpaceStyle()
+        a = zeros(eltype(A), ndims(A), n_envs, traj_len)
+    end
+
+    if provided(valid_action_mask, env)
+        a_mask = trues(size(A)..., n_envs, traj_len)
+        return Buffer(; s, a, a_mask)
+    else
+        return Buffer(; s, a)
+    end
 end
 
 Flux.@functor Buffer
 
-function sample_batch!(dst::Buffer, src::Buffer, idxs)
+function sample_batch!(dst::T, src::T, idxs) where {T <: Buffer}
     copy_fun(x, y) = copyto!(x, selectdim(y, ndims(y), idxs))
     fmap(copy_fun, dst, src)
-end
-
-function send_to!(buffer::Buffer, idx::Int; kwargs...)
-    for (key, val) in kwargs
-        arr = getfield(buffer, key)
-        copyto!(selectdim(arr, ndims(arr), idx), val)
-    end
-    nothing
-end
-
-@with_kw struct Logger{T}
-    log = Dict{Symbol, T}()
-end
-function (logger::Logger{Tuple{Vector, Vector}})(x_val; kwargs...)
-    for (key, val) in kwargs
-        x_vec, y_vec = get!(logger.log, key, (typeof(x_val)[], typeof(val)[]))
-        push!(x_vec, x_val)
-        push!(y_vec, val)
-    end
-    nothing
-end
-function (logger::Logger{Vector})(; kwargs...)
-    for (key, val) in kwargs
-        y_vec = get!(logger.log, key, typeof(val)[])
-        push!(y_vec, val)
-    end
-    nothing
 end
 
 @with_kw struct PPOSolver
@@ -79,44 +64,46 @@ end
     traj_len::Int64 = 2048
     batch_size::Int64 = 64
     n_epochs::Int64 = 10
-    discount::Float32 = 0.99f0
-    gae_lambda::Float32 = 1f0 # 1.0 corresponds to not using GAE
-    clip_coef::Float32 = 0.5f0
+    discount::Float32 = 0.99
+    gae_lambda::Float32 = 0.95
+    clip_coef::Float32 = 0.5
     norm_advantages::Bool = true
     ent_coef::Float32 = 0
-    vf_coef::Float32 = 0.5f0
+    vf_coef::Float32 = 0.5
     rng = default_rng()
-    seed::Int64 = 0
+    kl_targ::Float32 = 0.02
     device::Function = cpu # cpu or gpu
-    kl_targ::Float64 = 0.02
     opt_0 = Flux.Optimisers.Adam(lr)
     ac::ActorCritic = ActorCritic(env) 
     
     @assert device in [cpu, gpu]
-    @assert iszero(n_transitions%batch_size) "traj_len*n_envs not divisible by batch_size"
+    @assert iszero(Int64(length(env)*traj_len)%batch_size)
 end
 
 function solve(solver::PPOSolver)
     @unpack_PPOSolver solver
 
-    n_transitions = Int64(length(env)*traj_len)
-
     start_time = time()
     info = Logger{Tuple{Vector, Vector}}()
 
-    seed!(rng, seed)
     reset!(env)
 
-    buffer, ac = (Buffer(; env, traj_len), ac) .|> device
+    buffer = Buffer( env, traj_len)
+
+    buffer, ac = (buffer, ac) .|> device
     opt = Flux.setup(opt_0, ac)
 
-    # used for training
-    flat_buffer = fmap(x->reshape(x, size(x)[1:end-2]..., :), buffer)
+    flat_buffer = fmap(x->reshape(x, size(x)[1:end-2]..., :), buffer) # points to same data as buffer
     mini_buffer = fmap(x->similar(x, size(x)[1:end-1]..., batch_size), flat_buffer)
 
-    prog = Progress(n_steps)
+    n_transitions = Int(length(env)*traj_len)
+    prog = Progress(floor(n_steps / n_transitions) |> Int)
     for global_step in n_transitions:n_transitions:n_steps
-        last_value = rollout!(env, buffer, ac, traj_len, device)
+        for traj_step in 1:traj_len
+            rollout!(env, buffer, ac, traj_step, device)
+        end
+
+        (_, _, _, last_value) = get_actionvalue(ac, observe(env) |> stack |> device)    
         gae!(buffer, last_value, discount, gae_lambda)
 
         learning_rate = lr_decay ? (1-global_step/n_steps)*lr : lr
@@ -126,70 +113,84 @@ function solve(solver::PPOSolver)
             loss_info = train_batch!(ac, opt, flat_buffer, mini_buffer, solver)
 
             if epoch == n_epochs || loss_info.kl_est > kl_targ
-                info(global_step; loss_info...)
+                info(global_step; loss_info...) # this logging may be slightly inaccurate
                 break
             end
         end
         
         info(global_step; learning_rate, wall_time = time() - start_time)
 
-        next!(prog; 
-            step = n_transitions, 
-            showvalues = zip(keys(info.log), map(x->x[2][end], values(info.log)))
-        )
+        showvalues = zip(keys(info.log), map(x->x[2][end], values(info.log)))
+        next!(prog; showvalues)
     end
     finish!(prog)
 
     return cpu(ac), info.log
 end
 
-function rollout!(env, buffer, ac, traj_len, device)
-    for traj_step in 1:traj_len
-        s = observe(env) |> stack .|> Float32 |> device
-        (a, a_logprob, _, value) = get_actionvalue(ac, s)
-        r = act!(env, cpu(a))
-        done = terminated(env)
-        send_to!(buffer, traj_step; s, a, a_logprob, value, r, done)
+function rollout!(env, buffer, ac, traj_step, device)
+    s = observe(env) |> stack |> device
+    a_mask = provided(valid_action_mask, env) ? device(stack(valid_action_mask(env))) : nothing
+    (a, a_logprob, _, value) = get_actionvalue(ac, s; action_mask = a_mask)
+
+    idxs = CartesianIndex.(a, 1:length(a))
+    if any(.!a_mask[idxs])
+        println(a)
+        println(a_mask)
+        println(a_logprob)
+        @assert false
     end
-    last_s = observe(env) |> stack .|> Float32 |> device
-    (_, _, _, last_value) = get_actionvalue(ac, last_s)
-    return last_value
+
+    r = act!(env, cpu(a))
+    done = terminated(env)
+    send_to!(buffer, traj_step; s, a, a_logprob, value, r, done, a_mask)
+    nothing
+end
+
+function send_to!(buffer::Buffer, idx::Int; kwargs...)
+    for (key, val) in kwargs
+        isnothing(val) && continue
+        arr = getfield(buffer, key)
+        copyto!(selectdim(arr, ndims(arr), idx), val)
+    end
+    nothing
 end
 
 function gae!(buffer::Buffer, last_value, discount, gae_lambda)
-    last_advantage = similar(buffer.advantages, size(buffer.advantages,1)) .= 0
-    itrs = eachcol.((buffer.advantages, buffer.r, buffer.done, buffer.value))
-    for (advantages, r, done, value) in Iterators.reverse(zip(itrs...))
-        td = r .+ discount * (.!done .* last_value) .- value
-        advantages .= td .+ (discount*gae_lambda) * (.!done .* last_advantage)
+    @unpack r, done, value, advantages, returns = buffer
+    last_advantage = fill!(similar(last_value), zero(eltype(last_value)))
+    for (advantages, r, done, value) in Iterators.reverse(zip(eachcol.((advantages, r, done, value))...))
+        td = @. r + discount * !done * last_value - value
+        @. advantages = td + gae_lambda * discount * !done * last_advantage
         last_value, last_advantage = value, advantages
     end
-    buffer.returns .= buffer.advantages .+ buffer.value
+    @. returns = advantages + value
     nothing
 end
 
 function train_batch!(
-        ac::ActorCritic,
-        opt,
-        flat_buffer::Buffer, 
-        mini_buffer::Buffer,
-        solver::PPOSolver
+    ac::ActorCritic,
+    opt,
+    flat_buffer::Buffer, 
+    mini_buffer::Buffer,
+    solver::PPOSolver
     )
 
-    @unpack_PPOSolver solver
+    @unpack batch_size, norm_advantages, clip_coef, ent_coef, vf_coef = solver
 
     loss_info = Logger{Vector}()
 
-    for idxs in Iterators.partition(randperm(size(flat_buffer.done,1)), batch_size)
-        sample_batch!(mini_b, flat_buffer, idxs)
+    N = size(flat_buffer.done,1)
+    for idxs in Iterators.partition(randperm(N), batch_size)
+        sample_batch!(mini_buffer, flat_buffer, idxs)
 
-        @unpack s, a, a_logprob, advantages = mini_buffer
+        @unpack s, a, a_logprob, advantages, returns, a_mask = mini_buffer
         if norm_advantages
             advantages = normalize(mini_buffer.advantages)
         end
 
         grads = Flux.gradient(ac) do ac
-            (_, newlogprob, entropy, newvalue) = get_actionvalue(ac, s, a)
+            (_, newlogprob, entropy, newvalue) = get_actionvalue(ac, s; action=vec(a), action_mask=a_mask)
             (policy_loss, clip_frac, kl_est) = policy_loss_fun(a_logprob, newlogprob, advantages, clip_coef)
             value_loss = Flux.mse(newvalue, returns)/2
             entropy_loss = mean(entropy)
@@ -230,13 +231,11 @@ end
 function clip_grads(grads, thresh=0.5f0)
     isinf(thresh) && return grads
     grad_vec, model = Flux.Optimisers.destructure(grads)
-    l2 = norm(grad_vec)
-    if l2 > thresh
-        grad_vec *= (thresh / l2)
+    ratio = thresh / norm(grad_vec)
+    if ratio < 1
+        grad_vec .*= ratio
     end
     clip_grads = model(grad_vec)
 end
-
-normalize(x; eps = 1f-8) = (x .- mean(x)) / (std(x) + eps)
 
 end

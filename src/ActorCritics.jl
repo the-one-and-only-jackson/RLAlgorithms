@@ -21,8 +21,6 @@ function (ac::ActorCritic)(state)
     return action
 end
 
-const ALLOWED_ARRAY = Union{Array{Float32}, CuArray{Float32}}
-
 struct DiscreteActorCritic <: ActorCritic
     shared::Chain
     actor::Chain
@@ -31,11 +29,11 @@ struct DiscreteActorCritic <: ActorCritic
 end
 Flux.@functor DiscreteActorCritic
 
-struct ContinuousActorCritic{T<:ALLOWED_ARRAY} <: ActorCritic
+struct ContinuousActorCritic <: ActorCritic
     shared::Chain
     actor::Chain
     critic::Chain
-    log_std::T
+    log_std::AbstractVector{<:AbstractFloat}
     rng::AbstractRNG
     squash::Bool
 end
@@ -115,34 +113,53 @@ get_actionvalue(ac::DiscreteActorCritic, state::AbstractMatrix, action=nothing)
 return (action<:AbstractArray, action_log_prob<:AbstractVector, entropy<:AbstractVector, value<:AbstractVector)
 """
 
-function get_feedforward_out(ac::ActorCritic, state::T)::Tuple{T,T} where {T<:ALLOWED_ARRAY}
+function get_feedforward_out(ac::ActorCritic, state::AbstractArray{<:Real})
     shared_out = isempty(ac.shared) ? state : ac.shared(state)
     actor_out = ac.actor(shared_out)
     critic_out = ac.critic(shared_out)
     return actor_out, critic_out
 end
 
-function get_actionvalue(ac::DiscreteActorCritic, state::ALLOWED_ARRAY, action_idx::Union{Nothing, AbstractVector{<:Integer}}=nothing)
+function get_actionvalue(
+    ac::DiscreteActorCritic, 
+    state::AbstractArray{<:Real};
+    action::Union{Nothing, AbstractVector{<:Integer}} = nothing,
+    action_mask = nothing
+    )
+
     actor_out, value = get_feedforward_out(ac, state)
 
-    log_probs = actor_out .- logsumexp(actor_out; dims=1)
-    probs = softmax(log_probs; dims=1)
-    entropy = -sum(log_probs .* probs, dims=1)
-
-    if isnothing(action_idx)
-        action_idx = sample_discrete.(eachcol(cpu(probs))) # need to implement for gpu?
+    if !isnothing(action_mask)
+        actor_out += eltype(actor_out)(-1f10) * .!action_mask
     end
 
-    action_log_prob = log_probs[CartesianIndex.(action_idx, 1:length(action_idx))]
+    log_probs = actor_out .- logsumexp(actor_out; dims=1)
+    probs = softmax(actor_out; dims=1)
 
-    return (action_idx, action_log_prob, entropy, value) .|> vec
+    entropy = -sum(log_probs .* probs, dims=1)
+
+    if isnothing(action)
+        action = sample_discrete.(ac.rng, eachcol(cpu(probs))) # need to implement for gpu?
+    end
+
+    action_log_prob = log_probs[CartesianIndex.(action, 1:length(action))]
+
+    return (action, action_log_prob, entropy, value) .|> vec
 end
+
 # function get_actionvalue(ac::DiscreteActorCritic, state::AbstractVector, action=nothing; args...)
 #     mat_results = get_actionvalue(ac, reshape(state, :, 1), action; args...)
 #     return first.(mat_results)
 # end
 
-function get_actionvalue(ac::ContinuousActorCritic, state::ALLOWED_ARRAY, action::Union{Nothing, ALLOWED_ARRAY}=nothing; action_clamp=tanh(3f0))
+function get_actionvalue(
+    ac::ContinuousActorCritic, 
+    state::AbstractArray{<:Real}; 
+    action::Union{Nothing, AbstractArray{<:Real}} = nothing, 
+    action_clamp::Float32 = tanh(3),
+    kwargs...
+    )
+
     action_mean, value = get_feedforward_out(ac, state)
     log_std = clamp.(ac.log_std, -20, 2)
     action_std = exp.(log_std)

@@ -1,6 +1,7 @@
 module MultiEnv
 
 using CommonRLInterface
+using Parameters: @with_kw
 using ..Spaces
 
 export
@@ -15,16 +16,20 @@ const RL = CommonRLInterface
 
 abstract type AbstractMultiEnv <: AbstractEnv end
 
-struct VecEnv <: AbstractMultiEnv
-    envs::Vector{AbstractEnv}
-    dones::Vector{Bool}
-    auto_reset::Bool
+RL.actions(e::AbstractMultiEnv) = MultiAgentArraySpace(single_actions(e), length(e))
+RL.observations(e::AbstractMultiEnv) = MultiAgentArraySpace(single_observations(e), length(e))
+
+
+@with_kw struct VecEnv <: AbstractMultiEnv
+    envs::Vector{<:AbstractEnv}
+    dones::Vector{Bool} = fill(false, length(envs))
+    auto_reset::Bool = true
+    batch::Bool = false
 end
 
-function VecEnv(env_fcn::Function; n_envs=1, auto_reset=true)
+function VecEnv(env_fcn::Function; n_envs=1, kw_args...)
     envs = [env_fcn() for _ in 1:n_envs]
-    dones = fill(false, n_envs)
-    return VecEnv(envs, dones, auto_reset)
+    return VecEnv(; envs, kw_args...)
 end
 
 Base.length(e::VecEnv) = length(e.envs)
@@ -43,12 +48,12 @@ function RL.act!(e::VecEnv, a)
     end
     return r
 end
-function vecEnvAct!(e::VecEnv, a::Vector)
+function vecEnvAct!(e::VecEnv, a::AbstractVector)
     @assert length(e.envs)==length(a) "Number of actions does not match number of envs."
     r = act!.(e.envs, a)
     return r
 end
-function vecEnvAct!(e::VecEnv, a::Array)
+function vecEnvAct!(e::VecEnv, a::AbstractArray)
     dims = ndims(a)
     @assert length(e.envs)==size(a, dims) "Number of actions does not match number of envs."
     r = act!.(e.envs, eachslice(a; dims))
@@ -58,11 +63,9 @@ end
 RL.terminated(e::VecEnv) = e.dones
 RL.observe(e::VecEnv) = observe.(e.envs)
 
-RL.actions(e::VecEnv) = MultiAgentArraySpace(single_actions(e), length(e))
-RL.observations(e::VecEnv) = MultiAgentArraySpace(single_observations(e), length(e))
-
 single_actions(e::VecEnv) = actions(first(e.envs))
 single_observations(e::VecEnv) = observations(first(e.envs))
 
+RL.valid_action_mask(e::VecEnv) = valid_action_mask.(e.envs)
 
 end

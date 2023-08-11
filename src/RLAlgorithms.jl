@@ -1,5 +1,7 @@
 module RLAlgorithms
 
+include("utils.jl")
+
 include("spaces.jl")
 
 include("multienv.jl")
