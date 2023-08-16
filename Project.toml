@@ -4,6 +4,7 @@ authors = ["geekyjackson <49768259+geekyjackson@users.noreply.github.com>"]
 version = "0.1.0"
 
 [deps]
+BenchmarkTools = "6e4b80f9-dd63-53aa-95a3-0cdb28fa8baf"
 CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
 ChainRules = "082447d4-558c-5d27-93f4-14fc19e9eca2"
 CommonRLInterface = "d842c3ba-07a1-494f-bbec-f5741b0a3e98"
