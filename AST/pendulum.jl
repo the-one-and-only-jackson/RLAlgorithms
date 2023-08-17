@@ -99,8 +99,8 @@ function CommonRLInterface.reset!(env::PendSim)
 end
 
 CommonRLInterface.actions(env::PendSim) = DistributionSpace(env.noise)
-CommonRLInterface.observations(::PendSim) = Box(fill(-Inf,4), fill(Inf,4))
+CommonRLInterface.observations(::PendSim) = Box(fill(-Inf32,4), fill(Inf32,4))
 CommonRLInterface.terminated(env::PendSim) = abs(env.p.x[2]) > 0.3
-CommonRLInterface.observe(env::PendSim) = copy(env.p.x)
+CommonRLInterface.observe(env::PendSim) = Float32.(env.p.x)
 
 end

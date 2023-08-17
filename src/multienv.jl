@@ -67,5 +67,6 @@ single_actions(e::VecEnv) = actions(first(e.envs))
 single_observations(e::VecEnv) = observations(first(e.envs))
 
 RL.valid_action_mask(e::VecEnv) = valid_action_mask.(e.envs)
+# Note: setup "forward to wrapped" and provided
 
 end

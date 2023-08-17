@@ -41,19 +41,22 @@ function Buffer(env::AbstractMultiEnv, traj_len::Int)
         a = zeros(eltype(A), ndims(A), n_envs, traj_len)
     end
 
-    if provided(valid_action_mask, env)
-        a_mask = trues(size(A)..., n_envs, traj_len)
-        return Buffer(; s, a, a_mask)
-    else
-        return Buffer(; s, a)
-    end
+    # if provided(valid_action_mask, env)
+    #     a_mask = trues(size(A)..., n_envs, traj_len)
+    #     return Buffer(; s, a, a_mask)
+    # else
+    #     return Buffer(; s, a)
+    # end
+
+    return Buffer(; s, a)
+
 end
 
 Flux.@functor Buffer
 
 function sample_batch!(dst::T, src::T, idxs) where {T <: Buffer}
     copy_fun(x, y) = copyto!(x, selectdim(y, ndims(y), idxs))
-    fmap(copy_fun, dst, src)
+    fmap(copy_fun, dst, src; exclude=x->x isa AbstractArray)
 end
 
 @with_kw struct PPOSolver
@@ -93,8 +96,8 @@ function solve(solver::PPOSolver)
     buffer, ac = (buffer, ac) .|> device
     opt = Flux.setup(opt_0, ac)
 
-    flat_buffer = fmap(x->reshape(x, size(x)[1:end-2]..., :), buffer) # points to same data as buffer
-    mini_buffer = fmap(x->similar(x, size(x)[1:end-1]..., batch_size), flat_buffer)
+    flat_buffer = fmap(x->reshape(x, size(x)[1:end-2]..., :), buffer; exclude=x->x isa AbstractArray) # points to same data as buffer
+    mini_buffer = fmap(x->similar(x, size(x)[1:end-1]..., batch_size), flat_buffer; exclude=x->x isa AbstractArray)
 
     n_transitions = Int(length(env)*traj_len)
     prog = Progress(floor(n_steps / n_transitions) |> Int)
@@ -130,16 +133,11 @@ end
 
 function rollout!(env, buffer, ac, traj_step, device)
     s = observe(env) |> stack |> device
-    a_mask = provided(valid_action_mask, env) ? device(stack(valid_action_mask(env))) : nothing
+    a_mask = nothing
+    # if provided(valid_action_mask, env)
+    #     a_mask = device(stack(valid_action_mask(env)))
+    # end
     (a, a_logprob, _, value) = get_actionvalue(ac, s; action_mask = a_mask)
-
-    idxs = CartesianIndex.(a, 1:length(a))
-    if any(.!a_mask[idxs])
-        println(a)
-        println(a_mask)
-        println(a_logprob)
-        @assert false
-    end
 
     r = act!(env, cpu(a))
     done = terminated(env)
@@ -190,7 +188,7 @@ function train_batch!(
         end
 
         grads = Flux.gradient(ac) do ac
-            (_, newlogprob, entropy, newvalue) = get_actionvalue(ac, s; action=vec(a), action_mask=a_mask)
+            (_, newlogprob, entropy, newvalue) = get_actionvalue(ac, s; action=a, action_mask=a_mask)
             (policy_loss, clip_frac, kl_est) = policy_loss_fun(a_logprob, newlogprob, advantages, clip_coef)
             value_loss = Flux.mse(newvalue, returns)/2
             entropy_loss = mean(entropy)

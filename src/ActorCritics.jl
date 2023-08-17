@@ -113,7 +113,7 @@ get_actionvalue(ac::DiscreteActorCritic, state::AbstractMatrix, action=nothing)
 return (action<:AbstractArray, action_log_prob<:AbstractVector, entropy<:AbstractVector, value<:AbstractVector)
 """
 
-function get_feedforward_out(ac::ActorCritic, state::AbstractArray{<:Real})
+function get_feedforward_out(ac::ActorCritic, state::AbstractArray{Float32}) # change state
     shared_out = isempty(ac.shared) ? state : ac.shared(state)
     actor_out = ac.actor(shared_out)
     critic_out = ac.critic(shared_out)
@@ -156,7 +156,7 @@ function get_actionvalue(
     ac::ContinuousActorCritic, 
     state::AbstractArray{<:Real}; 
     action::Union{Nothing, AbstractArray{<:Real}} = nothing, 
-    action_clamp::Float32 = tanh(3),
+    action_clamp::Float32 = tanh(3f0),
     kwargs...
     )
 

@@ -1,5 +1,7 @@
 # julia --project=@. pend-ast.jl
 
+using Revise
+
 using RLAlgorithms.MultiEnv: VecEnv
 using RLAlgorithms.PPO: solve, PPOSolver
 using RLAlgorithms.MultiEnvWrappers: ObsNorm, RewNorm
@@ -32,28 +34,49 @@ function get_sub_dir(main_dir)
     return mkpath(joinpath(main_dir, "$ii"))
 end
 
+using CommonRLInterface
+RL = CommonRLInterface
+"""
+FrameSkipWrapper
+"""
+struct FrameSkipWrapper <: RL.Wrappers.AbstractWrapper
+    env::AbstractEnv
+    n_frames::Int
+    discount::AbstractFloat
+end
+RL.Wrappers.wrapped_env(e::FrameSkipWrapper) = e.env
+
+function CommonRLInterface.act!(e::FrameSkipWrapper, a)
+    r = act!(e.env, a)
+    for i = 1:e.n_frames-1
+        terminated(env) && break
+        r += e.discount^i * act!(e.env, a)
+    end
+    return r
+end
+
 exp_dir = get_exp_dir()
 
-for seed in 0:9
+for _ in 0:4
     env = VecEnv(n_envs=8) do 
-        AST_distributional(; env=PendSim(), n_steps=100, terminal_cost=1000)
+        e = AST_distributional(; env=PendSim(), n_steps=100, terminal_cost=1000)
+        FrameSkipWrapper(e, 1, 1f0)
     end |> ObsNorm
 
     env = RewNorm(; env)
 
     solver = PPOSolver(;
         env,
-        n_steps = 5_000_000,
+        n_steps = 1_000_000,
         lr = 3f-4,
         lr_decay = true,
         vf_coef = 1,
         traj_len = 128,
         batch_size = 128,
-        n_epochs = 10,
+        n_epochs = 4,
         discount = 1,
         gae_lambda = 0.95f0, # 1.0 corresponds to not using GAE
         norm_advantages = true,
-        seed,
         kl_targ = 0.02
     )
 
@@ -65,4 +88,66 @@ for seed in 0:9
     @save joinpath(dir, "info.bson") info
 end
 
+env = VecEnv(n_envs=8) do 
+    e = AST_distributional(; env=PendSim(), n_steps=100, terminal_cost=1000)
+    FrameSkipWrapper(e, 1, 1f0)
+end |> ObsNorm
 
+CommonRLInterface.observe(env::PendSim) = Float32.(env.p.x)
+
+env = PendSim()
+
+reset!(env)
+observe(env)
+
+env = RewNorm(; env)
+
+using RLAlgorithms.MultiEnv: single_observations
+single_observations(env)
+
+
+env = VecEnv(n_envs=8) do 
+    e = AST_distributional(; env=PendSim(), n_steps=100, terminal_cost=1000)
+    # FrameSkipWrapper(e, 1, 1f0)
+end # |> ObsNorm
+
+# env = RewNorm(; env)
+
+solver = PPOSolver(;
+    env,
+    n_steps = 1_000_000,
+    lr = 3f-4,
+    lr_decay = true,
+    vf_coef = 1,
+    traj_len = 128,
+    batch_size = 128,
+    n_epochs = 4,
+    discount = 1,
+    gae_lambda = 0.95f0, # 1.0 corresponds to not using GAE
+    norm_advantages = true,
+    kl_targ = 0.02
+)
+
+using RLAlgorithms.PPO
+reset!(env)
+buffer = PPO.Buffer(env, solver.traj_len)
+@time PPO.rollout!(env, buffer, solver.ac, 1, solver.device)
+
+
+struct MyStruct
+    # stuff...
+    nothing_or_arr::Union{Nothing, AbstractArray{Bool}}
+end
+
+# VS
+
+abstract type MyType end
+
+struct MyStruct1 <: MyType
+    # stuff...
+end
+
+struct MyStruct2 <: MyType
+    # stuff...
+    nothing_or_arr::AbstractArray{Bool}
+end

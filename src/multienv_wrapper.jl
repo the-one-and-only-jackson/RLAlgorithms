@@ -74,7 +74,6 @@ end
 CommonRLInterface.provided(f::Function, w::AbstractMultiWrapper, args...) = provided(f, wrapped_env(w), args...)
 CommonRLInterface.provided(::typeof(CommonRLInterface.clone), w::AbstractMultiWrapper, args...) = false
 
-
 """ 
 RunningStats
 """
