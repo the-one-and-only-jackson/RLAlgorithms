@@ -77,15 +77,15 @@ CommonRLInterface.provided(::typeof(CommonRLInterface.clone), w::AbstractMultiWr
 """ 
 RunningStats
 """
-mutable struct RunningStats
-    k::Integer
-    const M::AbstractArray
-    const S::AbstractArray
+@with_kw mutable struct RunningStats{T<:AbstractArray{<:AbstractFloat}}
+    k::Int = 0
+    M::T = zeros(T, sz)
+    S::T = zeros(T, sz)
 end
 RunningStats(T, sz) = RunningStats(0, zeros(T, sz), zeros(T, sz))
 function (rs::RunningStats)(x)
     rs.k += 1
-    if rs.k == 1
+    if isone(rs.k)
         rs.M .= x
     else
         x_diff = x .- rs.M
@@ -101,24 +101,18 @@ Statistics.var(rs::RunningStats) = (rs.k==1) ? fill!(similar(rs.S), 0) : rs.S/(r
 """ 
 ObsNorm
 """
-struct ObsNorm <: AbstractMultiWrapper
-    env::AbstractMultiEnv
-    obs_stats::RunningStats
-    s_lim::Number
+@with_kw struct ObsNorm{E<:AbstractMultiEnv, RS<:RunningStats} <: AbstractMultiWrapper
+    env::E
+    obs_stats::RS = RunningStats(eltype(single_observations(env)), size(single_observations(env)))
+    s_lim::Float32 = 10f0
+    @assert s_lim > 0
 end
 wrapped_env(e::ObsNorm) = e.env
-
-function ObsNorm(env; s_lim=10.0)
-    space = single_observations(env)
-    return ObsNorm(env, RunningStats(eltype(space), size(space)), abs(s_lim))
-end
 
 function CommonRLInterface.observe(wrap::ObsNorm)
     s_in = observe(wrap.env)
 
-    for s in s_in
-        wrap.obs_stats(s)
-    end
+    foreach(wrap.obs_stats, s_in)
 
     for s in s_in
         s .-= mean(wrap.obs_stats)
@@ -133,10 +127,10 @@ end
 """
 RewNorm
 """
-@with_kw struct RewNorm <: AbstractMultiWrapper
-    env::AbstractMultiEnv
-    rew_stats::RunningStats = RunningStats(Float32, 1)
-    returns::Vector = zeros(Float32, length(env))
+@with_kw struct RewNorm{E<:AbstractMultiEnv, RS<:RunningStats} <: AbstractMultiWrapper
+    env::E
+    rew_stats::RS = RunningStats(Float32, 1)
+    returns::Vector{Float32} = zeros(Float32, length(env))
     gamma::Float32 = 1
     epsilon::Float32 = 1f-8
 end

@@ -46,12 +46,19 @@ Base.size(b::Box) = size(b.lower)
 
 SpaceStyle(::Box) = ContinuousSpaceStyle()
 
-function product(b1::Box, b2::Box)
+function product(b1::Box{T1}, b2::Box{T2}) where {T1,T2}
     dims = length(size(b1))
-    @assert dims == length(size(b2))
-    lower = cat(b1.lower, b2.lower; dims)
-    upper = cat(b1.upper, b2.upper; dims)
-    return Box(lower, upper)
+    @assert dims == length(size(b2)) == 1 # note, function only works type stable for vectors
+
+    lower = [b1.lower; b2.lower]
+    upper = [b1.upper; b2.upper]
+    T = promote_type(T1,T2)
+    return Box{T}(lower, upper)
+
+    # functional, but not type stable
+    # lower = cat(b1.lower, b2.lower; dims)
+    # upper = cat(b1.upper, b2.upper; dims)
+    # return Box(lower, upper)
 end
 
 

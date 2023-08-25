@@ -29,12 +29,12 @@ struct DiscreteActorCritic <: ActorCritic
 end
 Flux.@functor DiscreteActorCritic
 
-struct ContinuousActorCritic <: ActorCritic
-    shared::Chain
-    actor::Chain
-    critic::Chain
-    log_std::AbstractVector{<:AbstractFloat}
-    rng::AbstractRNG
+struct ContinuousActorCritic{A<:Chain,B<:Chain,C<:Chain,D<:AbstractVector{<:AbstractFloat},E<:AbstractRNG} <: ActorCritic
+    shared::A
+    actor::B
+    critic::C
+    log_std::D
+    rng::E
     squash::Bool
 end
 Flux.@functor ContinuousActorCritic
@@ -105,7 +105,7 @@ function mlp(dims, act_fun, hidden_init, head_init = nothing)
     if !isnothing(head_init)
         push!(layers, Dense(dims[end-1] => dims[end]; init=head_init))
     end
-    return Chain(layers)
+    return Chain(layers...)
 end
 
 """
@@ -152,11 +152,44 @@ end
 #     return first.(mat_results)
 # end
 
+# function get_actionvalue(
+#     ac::ContinuousActorCritic, 
+#     state::AbstractArray{<:Real}; 
+#     action::Union{Nothing, AbstractArray{<:Real}} = nothing, 
+#     action_clamp::Float32 = tanh(3f0),
+#     kwargs...
+#     )
+
+#     action_mean, value = get_feedforward_out(ac, state)
+#     log_std = clamp.(ac.log_std, -20, 2)
+#     action_std = exp.(log_std)
+
+#     if isnothing(action)
+#         stand_normal = randn(ac.rng, eltype(action_mean), size(action_mean))
+#         action = action_mean .+ action_std .* stand_normal
+#         if ac.squash
+#             action = clamp.(tanh.(action), -action_clamp, action_clamp) # clamp for numeric stability
+#         end
+#     else
+#         action_normal = ac.squash ? inv_tanh(action) : action
+#         stand_normal = (action_normal .- action_mean) ./ action_std
+#     end
+
+#     action_log_prob = normal_logpdf(stand_normal, log_std)
+#     if ac.squash
+#         action_log_prob = action_log_prob .- sum(log.(1 .- action .^ 2); dims=1)
+#         entropy = sum(-action_log_prob; dims=1) # estimate
+#     else
+#         entropy = sum(log_std; dims=1) .+ size(log_std,1)*(1+log(2f0*pi))/2 # exact
+#     end
+
+#     return (action, vec(action_log_prob), vec(entropy), vec(value))
+# end
+
 function get_actionvalue(
     ac::ContinuousActorCritic, 
-    state::AbstractArray{<:Real}; 
-    action::Union{Nothing, AbstractArray{<:Real}} = nothing, 
-    action_clamp::Float32 = tanh(3f0),
+    state::AbstractArray{<:Real},
+    action::Union{Nothing, <:AbstractArray{<:Real}} = nothing;
     kwargs...
     )
 
@@ -167,21 +200,13 @@ function get_actionvalue(
     if isnothing(action)
         stand_normal = randn(ac.rng, eltype(action_mean), size(action_mean))
         action = action_mean .+ action_std .* stand_normal
-        if ac.squash
-            action = clamp.(tanh.(action), -action_clamp, action_clamp) # clamp for numeric stability
-        end
     else
         action_normal = ac.squash ? inv_tanh(action) : action
         stand_normal = (action_normal .- action_mean) ./ action_std
     end
 
     action_log_prob = normal_logpdf(stand_normal, log_std)
-    if ac.squash
-        action_log_prob = action_log_prob .- sum(log.(1 .- action .^ 2); dims=1)
-        entropy = sum(-action_log_prob; dims=1) # estimate
-    else
-        entropy = sum(log_std; dims=1) .+ size(log_std,1)*(1+log(2f0*pi))/2 # exact
-    end
+    entropy = sum(log_std; dims=1) .+ size(log_std,1)*(1+log(2f0*pi))/2 # exact
 
     return (action, vec(action_log_prob), vec(entropy), vec(value))
 end

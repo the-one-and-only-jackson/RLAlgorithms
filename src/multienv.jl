@@ -20,8 +20,8 @@ RL.actions(e::AbstractMultiEnv) = MultiAgentArraySpace(single_actions(e), length
 RL.observations(e::AbstractMultiEnv) = MultiAgentArraySpace(single_observations(e), length(e))
 
 
-@with_kw struct VecEnv <: AbstractMultiEnv
-    envs::Vector{<:AbstractEnv}
+@with_kw struct VecEnv{E<:AbstractEnv} <: AbstractMultiEnv
+    envs::Vector{E}
     dones::Vector{Bool} = fill(false, length(envs))
     auto_reset::Bool = true
     batch::Bool = false
@@ -66,7 +66,7 @@ RL.observe(e::VecEnv) = observe.(e.envs)
 single_actions(e::VecEnv) = actions(first(e.envs))
 single_observations(e::VecEnv) = observations(first(e.envs))
 
-RL.valid_action_mask(e::VecEnv) = valid_action_mask.(e.envs)
+# RL.valid_action_mask(e::VecEnv) = valid_action_mask.(e.envs)
 # Note: setup "forward to wrapped" and provided
 
 end

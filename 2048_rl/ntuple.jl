@@ -1,4 +1,3 @@
-using Random: randperm
 
 include("2048_env.jl")
 using CommonRLInterface

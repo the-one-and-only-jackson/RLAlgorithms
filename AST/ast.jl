@@ -12,28 +12,32 @@ export AST_distributional
 
 const RL = CommonRLInterface
 
-@with_kw struct AST_distributional <: AbstractEnv
-    env::AbstractEnv
-    n_steps::Int64
+@with_kw mutable struct AST_distributional{E<:AbstractEnv} <: AbstractEnv
+    env::E
+    n_steps::Int
     terminal_cost::Float64 = 5*n_steps*loglikelihood(actions(env).d, mean(actions(env).d))
-    info::Dict = Dict(
-        :steps=>Int64[],
-        :likelihood=>Float64[],
-        :KL=>Float64[],
-        :fail=>Bool[]
-    )
+    step_vec::Vector{Int} = Int[]
+    likelihood_vec::Vector{Float64} = Float64[]
+    KL_vec::Vector{Float64} = Float64[]
+    fail_vec::Vector{Bool} = Bool[]
+    step::Int = 0
+    likelihood::Float64 = 0.0
+    KL::Float64 = 0.0
+    fail::Bool = false
 end
 
+info(e::AST_distributional) = Dict(:steps=>e.step_vec, :likelihood=>e.likelihood_vec, :KL=>e.KL_vec, :fail=>e.fail_vec)
+
 function RL.reset!(e::AST_distributional)
-    if !isempty(e.info[:steps])
-        steps_togo = e.n_steps - e.info[:steps][end]
+    if !iszero(e.step)
+        steps_togo = e.n_steps - e.step
         expected_rew = -entropy(actions(e.env).d)
-        e.info[:likelihood][end] += steps_togo * expected_rew
+        e.likelihood += steps_togo * expected_rew
+
+        foreach(push!, (e.step_vec, e.likelihood_vec, e.KL_vec, e.fail_vec), (e.step, e.likelihood, e.KL, e.fail))
     end
 
-    for vec in values(e.info)
-        push!(vec, zero(eltype(vec)))
-    end
+    e.step, e.likelihood, e.KL, e.fail = 0, 0.0, 0.0, false
 
     reset!(e.env)
     nothing
@@ -46,14 +50,13 @@ function RL.act!(e::AST_distributional, a)
     x = rand(dist)
     act!(e.env, x)
 
-    likelihood = loglikelihood(model, x)
     kl = kl_divergence(dist, model)
 
     # logging
-    e.info[:steps][end] += 1
-    e.info[:likelihood][end] += likelihood
-    e.info[:KL][end] += kl
-    e.info[:fail][end] |= terminated(e.env)
+    e.step += 1
+    e.likelihood += loglikelihood(model, x)
+    e.KL += kl
+    e.fail |= terminated(e.env)
 
     r = -kl - e.terminal_cost * time_limit(e)
 
@@ -92,10 +95,10 @@ end
 
 RL.observations(e::AST_distributional) = product(Box([0], [Inf32]), observations(e.env))
 
-RL.observe(e::AST_distributional) = [e.info[:steps][end]; observe(e.env)]
+RL.observe(e::AST_distributional) = [e.step; observe(e.env)]
 
 RL.terminated(e::AST_distributional) = terminated(e.env) || time_limit(e)
 
-time_limit(e::AST_distributional) = e.info[:steps][end] >= e.n_steps
+time_limit(e::AST_distributional) = e.step >= e.n_steps
 
 end
