@@ -1,9 +1,10 @@
 module MultiEnvWrappers
 
-using CommonRLInterface
 using ..MultiEnv
-using ..Spaces: NumericArraySpace
+using ..MultiEnv.Spaces
 
+using CommonRLInterface
+using CommonRLInterface.Wrappers
 using Statistics
 using Parameters: @with_kw
 
@@ -17,31 +18,11 @@ export
     TransformWrapper,
     RewNorm
 
-"""
-    AbstractWrapper
-"""
+
 abstract type AbstractMultiWrapper <: AbstractMultiEnv end
 
-"""
-    wrapped_env(env)
-
-Return the wrapped environment for an AbstractWrapper.
-
-This is a *required function* that must be provided by every AbstractWrapper.
-
-See also [`unwrapped`](@ref).
-"""
-function wrapped_env end
-
-"""
-    unwrapped(env)
-
-Return the environment underneath all layers of wrappers.
-
-See also [wrapped_env`](@ref).
-"""
-unwrapped(env::AbstractMultiWrapper) = unwrapped(wrapped_env(env))
-unwrapped(env::AbstractMultiEnv) = env
+Wrappers.unwrapped(env::AbstractMultiWrapper) = unwrapped(wrapped_env(env))
+Wrappers.unwrapped(env::AbstractMultiEnv) = env
 
 macro forward_to_wrapped(f)
     return :($f(w::AbstractMultiWrapper, args...; kwargs...) = $f(wrapped_env(w), args...; kwargs...))
@@ -79,8 +60,8 @@ RunningStats
 """
 @with_kw mutable struct RunningStats{T<:AbstractArray{<:AbstractFloat}}
     k::Int = 0
-    M::T = zeros(T, sz)
-    S::T = zeros(T, sz)
+    M::T = zeros(T, 1)
+    S::T = zeros(T, 1)
 end
 RunningStats(T, sz) = RunningStats(0, zeros(T, sz), zeros(T, sz))
 function (rs::RunningStats)(x)
@@ -107,7 +88,7 @@ ObsNorm
     s_lim::Float32 = 10f0
     @assert s_lim > 0
 end
-wrapped_env(e::ObsNorm) = e.env
+Wrappers.wrapped_env(e::ObsNorm) = e.env
 
 function CommonRLInterface.observe(wrap::ObsNorm)
     s_in = observe(wrap.env)
@@ -134,11 +115,11 @@ RewNorm
     gamma::Float32 = 1
     epsilon::Float32 = 1f-8
 end
-wrapped_env(e::RewNorm) = e.env
+Wrappers.wrapped_env(e::RewNorm) = e.env
 
 function CommonRLInterface.act!(wrap::RewNorm, a)
-    r = act!(wrapped_env(wrap), a)
-    wrap.returns .= r .+ wrap.gamma * .!terminated(wrapped_env(wrap)) .* wrap.returns
+    r = act!(wrap.env, a)
+    wrap.returns .= r .+ wrap.gamma * .!terminated(wrap.env) .* wrap.returns
     wrap.rew_stats.(wrap.returns)
     return r ./ sqrt.(var(wrap.rew_stats) .+ wrap.epsilon)
 end
@@ -158,7 +139,7 @@ LoggingWrapper
 end
 LoggingWrapper(env) = LoggingWrapper(; env)
 
-wrapped_env(w::LoggingWrapper) = w.env
+Wrappers.wrapped_env(w::LoggingWrapper) = w.env
 
 function CommonRLInterface.act!(w::LoggingWrapper, a)
     r = act!(w.env, a)
@@ -192,7 +173,7 @@ TransformWrapper
     observation_fun::Function = identity
     single_observations::NumericArraySpace = single_observations(env)
 end
-wrapped_env(e::TransformWrapper) = e.env
+Wrappers.wrapped_env(e::TransformWrapper) = e.env
 
 MultiEnv.single_actions(e::TransformWrapper) = e.single_actions
 CommonRLInterface.act!(e::TransformWrapper, a) = act!(e.env, a) .|> e.action_fun

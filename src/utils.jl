@@ -1,9 +1,8 @@
 module Utils
 
 using Parameters: @with_kw
-using Statistics: mean, std
 
-export Logger, normalize
+export Logger
 
 @with_kw struct Logger{T}
     log = Dict{Symbol, T}()
@@ -25,7 +24,5 @@ function (logger::Logger{Vector})(; kwargs...)
     end
     nothing
 end
-
-normalize(x::AbstractVector, eps = eltype(x)(1e-8)) = (x .- mean(x)) / (std(x) + eps)
 
 end

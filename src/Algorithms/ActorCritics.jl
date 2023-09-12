@@ -1,19 +1,3 @@
-module ActorCritics
-
-using Flux
-using Random: AbstractRNG, default_rng
-using CommonRLInterface
-using CUDA
-
-using ..Spaces
-using ..MultiEnv
-
-export 
-    ActorCritic,
-    get_actionvalue,
-    DiscreteActorCritic,
-    ContinuousActorCritic
-
 abstract type ActorCritic end
 
 function (ac::ActorCritic)(state)
@@ -234,4 +218,3 @@ end
 inv_tanh(x) = log.((1 .+ x)./(1 .- x))/2
 
 
-end

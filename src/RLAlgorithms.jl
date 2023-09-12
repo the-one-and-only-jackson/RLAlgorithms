@@ -2,18 +2,14 @@ module RLAlgorithms
 
 include("utils.jl")
 
-include("spaces.jl")
+include("Spaces/Spaces.jl")
 
-include("multienv.jl")
+include("CommonRLExtensions/CommonRLExtensions.jl")
 
-include("multienv_wrapper.jl")
+include("MultiEnv/MultiEnv.jl")
 
-# include("gym.jl")
+include("Algorithms/Algorithms.jl")
 
-include("ActorCritics.jl")
-# using .ActorCritics
+include("Environments/Environments.jl")
 
-include("ppo.jl")
-# using .PPO
-
-end # module RLAlgorithms
+end 
