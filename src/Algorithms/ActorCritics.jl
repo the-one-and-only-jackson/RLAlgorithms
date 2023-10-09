@@ -47,10 +47,24 @@ function DiscreteActorCritic(env; rng=default_rng(), kwargs...)
 end
 
 function ContinuousActorCritic(env::AbstractMultiEnv; rng=default_rng(), log_std_init=-0.5, squash=false, kwargs...)
-    ns = length(single_observations(env))
-    na = length(single_actions(env))
+    O = single_observations(env)
+    A = single_actions(env)
 
-    shared, actor, critic = feedforward_feature(ns, na; kwargs...)
+    @assert A isa Box "This actor-critic model only accepts RLAlgorithms.Spaces.Box observation spaces"
+    @assert A isa Box "This actor-critic model only accepts RLAlgorithms.Spaces.Box action spaces"
+
+    @assert length(size(A))==1 "Only vector action spaces supported"
+
+    ns = length(O)
+    na = length(A)
+
+    if length(size(O)) == 1
+        shared, actor, critic = feedforward_feature(ns, na; kwargs...)
+    else
+        @assert false "Image observations not yet supported"
+    end
+
+    # add code for action scaling
 
     log_std = fill(log_std_init, na) .|> Float32
 
@@ -146,6 +160,8 @@ function get_actionvalue(
 
     (action, action_log_prob, entropy) = if ac.squash
         get_action_squash(action_mean, log_std, action_std, ac.rng, action)
+        # squashed to [-1,1]
+
     else
         get_action(action_mean, log_std, action_std, ac.rng, action)
     end

@@ -129,7 +129,7 @@ function train_batch!(
                 kl_est = mean((ratio .- 1) .- log_ratio)
     
                 loss_info(; 
-                    policy_loss, value_loss, entropy_loss, total_loss, clip_frac, kl_est
+                    policy_loss, value_loss, entropy_loss, total_loss, clip_frac, kl_est, ac.log_std
                 ) 
             end
 

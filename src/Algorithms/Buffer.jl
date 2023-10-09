@@ -99,14 +99,16 @@ function send_to!(buffer::Buffer; kwargs...)
 end
 
 function gae!(buffer::Buffer, γ::Real, λ::Real)
-    @unpack r, done, value, next_value, advantages, returns = buffer
+    @unpack r, done, value, next_value, advantages, returns, trunc = buffer
 
     # Correctly initialize gpu or cpu arr
     next_advantage = similar(advantages, size(advantages,1)) .= 0
 
-    for (advantages, r, done, value, next_value) in Iterators.reverse(zip(eachcol.((advantages, r, done, value, next_value))...))
-        td = @. r + γ * !done * next_value - value
-        next_advantage = @. advantages = td + λ * γ * !done * next_advantage
+    contin = @. !(done || trunc)
+
+    for (advantages, r, contin, value, next_value) in Iterators.reverse(zip(eachcol.((advantages, r, contin, value, next_value))...))
+        td = @. r + γ * contin * next_value - value
+        next_advantage = @. advantages = td + λ * γ * contin * next_advantage
     end
     @. returns = advantages + value
     nothing

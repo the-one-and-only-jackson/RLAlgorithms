@@ -61,7 +61,8 @@ Wrappers.wrapped_env(e::RewNorm) = e.env
 
 function CommonRLInterface.act!(wrap::RewNorm, a)
     r = act!(wrap.env, a)
-    wrap.returns .= r .+ wrap.gamma * .!terminated(wrap.env) .* wrap.returns
+    wrap.returns .*= wrap.gamma .* .!(terminated(wrap.env) .|| truncated(wrap.env))
+    wrap.returns .+= r 
     wrap.rew_stats.(wrap.returns)
     return r ./ sqrt.(var(wrap.rew_stats) .+ wrap.epsilon)
 end
