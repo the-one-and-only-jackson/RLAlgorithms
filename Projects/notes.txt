@@ -1,0 +1,25 @@
+meeting 8/3
+
+not white noise - frequency space
+typical if freq less than x
+
+learned typicality classifier
+identify -> train
+
+michael -> 
+sydney katz
+fool classifier / adversarial
+
+astronautics journal
+ - jair (learnign distributins, long time horizons -> sacling up)
+ - astronautics (ask tyler)
+ - aerospace information systems (applying ast to aerospace + scaling up)
+
+^ for each write abstract (3/4 bullet points)
+
+
+LSTM
+
+GM - funding unclear
+airforce research lab project?
+think about what to do
