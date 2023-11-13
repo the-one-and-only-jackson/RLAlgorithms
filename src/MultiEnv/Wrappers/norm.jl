@@ -17,7 +17,7 @@ function (rs::RunningStats)(x)
 end
 Statistics.mean(rs::RunningStats) = copy(rs.M)
 Statistics.var(rs::RunningStats) = (rs.k==1) ? fill!(similar(rs.S), 0) : rs.S/(rs.k - 1)
-
+Statistics.std(rs::RunningStats) = sqrt.(var(rs)) # bad if variance is zero
 
 @with_kw struct ObsNorm{E<:AbstractMultiEnv, RS<:RunningStats} <: AbstractMultiWrapper
     env::E
@@ -25,7 +25,12 @@ Statistics.var(rs::RunningStats) = (rs.k==1) ? fill!(similar(rs.S), 0) : rs.S/(r
     s_lim::Float32 = 10f0
     @assert s_lim > 0
 end
-Wrappers.wrapped_env(e::ObsNorm) = e.env
+Wrappers.wrapped_env(wrap::ObsNorm) = wrap.env
+
+CommonRLExtensions.info(wrap::ObsNorm) = Dict(
+    "mean"=>mean(wrap.obs_stats), 
+    "std"=>std(wrap.obs_stats), 
+)
 
 function CommonRLInterface.observe(wrap::ObsNorm)
     s_in = observe(wrap.env)
@@ -54,14 +59,14 @@ end
     env::E
     rew_stats::RS = RunningStats(Float32, 1)
     returns::Vector{Float32} = zeros(Float32, length(env))
-    gamma::Float32 = 1
+    discount::Float32 = 1
     epsilon::Float32 = 1f-8
 end
 Wrappers.wrapped_env(e::RewNorm) = e.env
 
 function CommonRLInterface.act!(wrap::RewNorm, a)
     r = act!(wrap.env, a)
-    wrap.returns .*= wrap.gamma .* .!(terminated(wrap.env) .|| truncated(wrap.env))
+    wrap.returns .*= wrap.discount .* .!(terminated(wrap.env) .|| truncated(wrap.env))
     wrap.returns .+= r 
     wrap.rew_stats.(wrap.returns)
     return r ./ sqrt.(var(wrap.rew_stats) .+ wrap.epsilon)

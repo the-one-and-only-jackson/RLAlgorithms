@@ -17,7 +17,7 @@ function CommonRLInterface.observations(mc::MountainCar)
     Box(lower, upper)
 end
 
-CommonRLInterface.observe(mc::MountainCar) = copy(mc.state)
+CommonRLInterface.observe(mc::MountainCar) = SA[mc.state[1]+0.3f0, mc.state[2]/0.07f0]
 
 CommonRLInterface.actions(mc::MountainCar) = Box(SA[mc.min_action], SA[mc.max_action])
 
@@ -36,7 +36,7 @@ function CommonRLInterface.act!(mc::MountainCar, action::Real)
 
     reward = -0.1*action^2 + 100*terminated(mc)
 
-    return reward
+    return reward/10
 end
 
 function CommonRLInterface.terminated(mc::MountainCar)
@@ -52,7 +52,7 @@ function CommonRLInterface.reset!(mc::MountainCar, state=nothing)
 
     if isnothing(state)
         x0 = -0.5 + rand()/10 # uniform [-0.6, -0.4]
-        v0 = 0
+        v0 = 0.
         state = SA[x0, v0]
     end
 

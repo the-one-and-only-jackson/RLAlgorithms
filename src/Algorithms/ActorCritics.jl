@@ -5,11 +5,11 @@ function (ac::ActorCritic)(state)
     return action
 end
 
-struct DiscreteActorCritic <: ActorCritic
-    shared::Chain
-    actor::Chain
-    critic::Chain
-    rng::AbstractRNG
+struct DiscreteActorCritic{A<:Chain,B<:Chain,C<:Chain,D<:AbstractRNG} <: ActorCritic
+    shared::A
+    actor::B
+    critic::C
+    rng::D
 end
 Flux.@functor DiscreteActorCritic
 
@@ -64,8 +64,6 @@ function ContinuousActorCritic(env::AbstractMultiEnv; rng=default_rng(), log_std
         @assert false "Image observations not yet supported"
     end
 
-    # add code for action scaling
-
     log_std = fill(log_std_init, na) .|> Float32
 
     return ContinuousActorCritic(shared, actor, critic, log_std, rng, squash)
@@ -108,7 +106,6 @@ end
 
 """
 get_actionvalue(ac::DiscreteActorCritic, state::AbstractMatrix, action=nothing)
-return (action<:AbstractArray, action_log_prob<:AbstractVector, entropy<:AbstractVector, value<:AbstractVector)
 """
 
 function get_feedforward_out(ac::ActorCritic, state::AbstractArray{Float32}) # change state
@@ -120,8 +117,8 @@ end
 
 function get_actionvalue(
     ac::DiscreteActorCritic, 
-    state::AbstractArray{<:Real};
-    action::Union{Nothing, AbstractVector{<:Integer}} = nothing,
+    state::AbstractArray{<:Real},
+    action::Union{Nothing, AbstractMatrix{<:Integer}} = nothing;
     action_mask = nothing
     )
 
@@ -140,9 +137,10 @@ function get_actionvalue(
         action = sample_discrete.(ac.rng, eachcol(cpu(probs))) # need to implement for gpu?
     end
 
-    action_log_prob = log_probs[CartesianIndex.(action, 1:length(action))]
+    idxs = CartesianIndex.(action, reshape(1:length(action), size(action)))
+    action_log_prob = log_probs[idxs]
 
-    return (action, action_log_prob, entropy, value) .|> vec
+    return action, action_log_prob, entropy, value
 end
 
 function get_actionvalue(
@@ -160,13 +158,11 @@ function get_actionvalue(
 
     (action, action_log_prob, entropy) = if ac.squash
         get_action_squash(action_mean, log_std, action_std, ac.rng, action)
-        # squashed to [-1,1]
-
     else
         get_action(action_mean, log_std, action_std, ac.rng, action)
     end
 
-    return (action, vec(action_log_prob), vec(entropy), vec(value))
+    return action, action_log_prob, entropy, value
 end
 
 function get_action(
@@ -236,6 +232,6 @@ function normal_logpdf(stand_normal::AbstractArray{T}, log_std::AbstractArray{T}
     return num .- den
 end
 
-inv_tanh(x) = log.((1 .+ x)./(1 .- x))/2
+inv_tanh(x) = @. log((1 + x)/(1 - x))/2
 
 

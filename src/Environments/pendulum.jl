@@ -14,7 +14,7 @@ end
 
 CommonRLInterface.observations(env::Pendulum) = Box(SA[-1f0, -1f0, -Float32(env.max_speed)], SA[1f0, 1f0, Float32(env.max_speed)])
 
-CommonRLInterface.observe(env::Pendulum) = SA{Float32}[cos(env.state[1]), sin(env.state[1]), env.state[2]/env.max_speed]
+CommonRLInterface.observe(env::Pendulum) = SA{Float32}[cos(env.state[1]), sin(env.state[1]), env.state[2]]
 
 CommonRLInterface.actions(env::Pendulum) = Box(SA[Float32(env.min_action)], SA[Float32(env.max_action)])
 
@@ -22,7 +22,7 @@ CommonRLInterface.act!(env::Pendulum, action::AbstractArray) = act!(env, action[
 function CommonRLInterface.act!(env::Pendulum, action::Real)
     env.steps[] += 1
 
-    force = clamp(2*action, env.min_action, env.max_action)
+    force = clamp(action, env.min_action, env.max_action)
 
     theta, theta_dot = env.state
 

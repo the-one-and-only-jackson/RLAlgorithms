@@ -14,7 +14,12 @@ LoggingWrapper(env) = LoggingWrapper(; env)
 
 Wrappers.wrapped_env(w::LoggingWrapper) = w.env
 
-CommonRLExtensions.info(w::LoggingWrapper) = Dict("steps"=>w.step, "episode_length"=>w.episode_length, "reward"=>w.reward, "discounted_reward"=>w.discounted_reward)
+CommonRLExtensions.info(w::LoggingWrapper) = Dict(
+    "steps"=>w.step, 
+    "episode_length"=>w.episode_length, 
+    "reward"=>w.reward, 
+    "discounted_reward"=>w.discounted_reward
+)
 
 function CommonRLInterface.act!(w::LoggingWrapper, a)
     r = act!(w.env, a)
@@ -24,9 +29,6 @@ function CommonRLInterface.act!(w::LoggingWrapper, a)
 
     w.current_step .+= 1
     w.total_step[] += length(w.env)
-
-    dones = terminated(w.env)
-    _logging_reset!(w, dones)
 
     return r
 end

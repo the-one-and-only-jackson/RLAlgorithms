@@ -54,11 +54,6 @@ function product(b1::Box{T1}, b2::Box{T2}) where {T1,T2}
     upper = [b1.upper; b2.upper]
     T = promote_type(T1,T2)
     return Box{T}(lower, upper)
-
-    # functional, but not type stable
-    # lower = cat(b1.lower, b2.lower; dims)
-    # upper = cat(b1.upper, b2.upper; dims)
-    # return Box(lower, upper)
 end
 
 
