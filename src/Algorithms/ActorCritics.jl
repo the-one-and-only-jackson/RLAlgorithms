@@ -234,4 +234,5 @@ end
 
 inv_tanh(x) = @. log((1 + x)/(1 - x))/2
 
-
+# Flux helper
+(a::Flux.Dense{<:Any,<:CuArray,<:CuArray})(x::Array) = a(cu(x))
