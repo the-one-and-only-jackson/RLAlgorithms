@@ -9,6 +9,7 @@ using Parameters
 using Random: AbstractRNG, default_rng, seed!, randperm
 using Statistics: mean, std
 using ChainRules: ignore_derivatives, @ignore_derivatives
+using LinearAlgebra: norm
 
 using ..Utils
 using ..Spaces
