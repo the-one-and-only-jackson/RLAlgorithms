@@ -129,7 +129,7 @@ function train_epochs!(ac, opt, buffer, solver)
 end
 
 function train_minibatch!(ac, opt, mini_batch, solver, loss_info)
-    @unpack clip_coef, ent_coef, vf_coef = solver
+    @unpack clip_coef, ent_coef, vf_coef, clipl2 = solver
 
     grads = Flux.gradient(ac) do ac
         (_, newlogprob, entropy, newvalue) = get_actionvalue(ac, mini_batch.s, mini_batch.a; mini_batch.action_mask)
