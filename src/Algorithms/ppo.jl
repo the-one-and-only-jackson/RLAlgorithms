@@ -22,10 +22,7 @@
     rng::RNG = default_rng()
     kl_targ::Float32 = 0.02
     device::Function = cpu # cpu or gpu
-    opt_0::OPT = Flux.Optimisers.OptimiserChain(
-        Flux.Optimisers.ClipNorm(clipl2), 
-        Flux.Optimisers.Adam(lr)
-    )
+    opt_0::OPT = Flux.Optimisers.Adam(lr)
     ac::AC = ActorCritic(env) 
     
     @assert device in [cpu, gpu]
@@ -165,6 +162,14 @@ function train_minibatch!(ac, opt, mini_batch, solver, loss_info)
 
     if loss_info.log[:kl_est][end] > 1.5*solver.kl_targ
         return true
+    end
+
+    if isfinite(clipl2)
+        P = Flux.params(x)
+        lambda = min(1, clipl2/sum(norm, P))
+        for p in P
+            p .*= lambda
+        end
     end
 
     Flux.update!(opt, ac, grads[1])
