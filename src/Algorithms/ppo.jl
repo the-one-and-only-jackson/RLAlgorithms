@@ -165,16 +165,22 @@ function train_minibatch!(ac, opt, mini_batch, solver, loss_info)
     end
 
     if isfinite(clipl2)
-        P = Flux.params(x)
-        lambda = min(1, clipl2/sqrt(sum(x->norm(x)^2, P)))
-        for p in P
-            p .*= lambda
-        end
+        clip_grads!(grads[1], clipl2)
     end
 
     Flux.update!(opt, ac, grads[1])
 
     return false
+end
+
+function clip_grads!(grads, max_l2)
+    P = Flux.params(grads)
+    l2_norm = sqrt(sum(x->norm(x)^2, P))
+    lambda = min(1, max_l2/l2_norm)
+    for p in P
+        p .*= lambda
+    end
+    nothing
 end
 
 gae(buffer, γ, λ) = gae!(similar(buffer.r), similar(buffer.r), buffer, γ, λ)
