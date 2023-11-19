@@ -166,7 +166,7 @@ function train_minibatch!(ac, opt, mini_batch, solver, loss_info)
 
     if isfinite(clipl2)
         P = Flux.params(x)
-        lambda = min(1, clipl2/sum(norm, P))
+        lambda = min(1, clipl2/sqrt(sum(x->norm(x)^2, P)))
         for p in P
             p .*= lambda
         end
