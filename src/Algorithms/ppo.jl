@@ -23,7 +23,8 @@
     kl_targ::Float32 = 0.02
     device::Function = cpu # cpu or gpu
     opt_0::OPT = Flux.Optimisers.Adam(lr)
-    ac::AC = ActorCritic(env) 
+    ac_kwargs::NamedTuple = NamedTuple()
+    ac::AC = ActorCritic(env; ac_kwargs...) 
     
     @assert device in [cpu, gpu]
     @assert iszero(Int64(length(env)*traj_len)%batch_size)
