@@ -26,19 +26,17 @@ function Buffer(env::AbstractMultiEnv, traj_len::Int)
     s = zeros(eltype(O), size(O)..., n_envs, traj_len)
 
     A = single_actions(env)
-    if SpaceStyle(A) == ContinuousSpaceStyle()
+    action_mask = nothing
+
+    if A isa Box
         a = zeros(eltype(A), size(A)..., n_envs, traj_len)
-    elseif SpaceStyle(A) == FiniteSpaceStyle()
-        a = zeros(eltype(A), ndims(A), n_envs, traj_len)
+    elseif A isa Discrete
+        a = zeros(eltype(A), 1, n_envs, traj_len)
+        if provided(valid_action_mask, env)
+            action_mask = trues(length(collect(A)), n_envs, traj_len)
+        end
     else
         @assert "Space Style Error."
-    end
-
-    if provided(valid_action_mask, env)
-        action_mask = trues(size(A)..., n_envs, traj_len)
-        println("Action mask provided.")
-    else
-        action_mask = nothing
     end
 
     return Buffer(; s, a, action_mask, traj_len, n_envs)
