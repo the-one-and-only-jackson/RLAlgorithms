@@ -112,9 +112,19 @@ function train_epochs!(ac, opt, buffer, solver)
 
         for idxs in Iterators.partition(randperm(solver.rng, length(buffer)), batch_size)
             mini_batch = map(batch) do x
-                isnothing(x) && return nothing
-                y = reshape(x, size(x)[1:end-2]..., :) # flatten
-                copy(selectdim(y, ndims(y), idxs)) # copy important!
+                if isnothing(x)
+                    return nothing
+                elseif x isa AbstractArray
+                    y = reshape(x, size(x)[1:end-2]..., :) # flatten
+                    copy(selectdim(y, ndims(y), idxs)) # copy important!    
+                elseif x isa Tuple
+                    map(x) do x_el
+                        y = reshape(x_el, size(x)[1:end-2]..., :) # flatten
+                        copy(selectdim(y, ndims(y), idxs)) # copy important!        
+                    end
+                else
+                    @assert false "error"
+                end
             end
 
             if norm_advantages
@@ -135,27 +145,19 @@ function train_minibatch!(ac, opt, mini_batch, solver, loss_info)
     grads = Flux.gradient(ac) do ac
         (_, newlogprob, entropy, newvalue) = get_actionvalue(ac, mini_batch.s, mini_batch.a; mini_batch.action_mask)
 
-        log_ratio = newlogprob .- mini_batch.a_logprob
-        ratio = exp.(log_ratio)
-        pg_loss1 = -mini_batch.advantages .* ratio
-        pg_loss2 = -mini_batch.advantages .* clamp.(ratio, 1-clip_coef, 1+clip_coef)
-        policy_loss = mean(max.(pg_loss1, pg_loss2))
-    
+        policy_loss = get_policyloss(newlogprob, mini_batch.a_logprob, mini_batch.advantages, clip_coef, loss_info)
         value_loss = Flux.mse(newvalue, mini_batch.value_targets)
-        entropy_loss = mean(entropy)
+        entropy_loss = mean(mean, entropy)
         total_loss = policy_loss - ent_coef*entropy_loss + vf_coef*value_loss
 
         ignore_derivatives() do 
-            clip_frac = mean(abs.(ratio .- 1) .> clip_coef)
-            kl_est = mean((ratio .- 1) .- log_ratio)
-
             loss_info(; 
-                policy_loss, value_loss, entropy_loss, total_loss, clip_frac, kl_est
+                value_loss, entropy_loss, total_loss,
             )
 
-            # if ac isa ContinuousActorCritic
-            #     loss_info(; ac.log_std)
-            # end
+            if ac.actor isa ContinuousActorCritic
+                loss_info(; ac.log_std)
+            end
         end
 
         return total_loss
@@ -172,6 +174,37 @@ function train_minibatch!(ac, opt, mini_batch, solver, loss_info)
     Flux.update!(opt, ac, grads[1])
 
     return false
+end
+
+function get_policyloss(newlogprob::AbstractArray, oldlogprob::AbstractArray, advantages, clip_coef, loss_info)
+    log_ratio = newlogprob .- oldlogprob
+    ratio = exp.(log_ratio)
+    pg_loss1 = -advantages .* ratio
+    pg_loss2 = -advantages .* clamp.(ratio, 1-clip_coef, 1+clip_coef)
+    policy_loss = mean(max.(pg_loss1, pg_loss2))
+    ignore_derivatives() do 
+        clip_frac = mean(abs.(ratio .- 1) .> clip_coef)
+        kl_est = mean((ratio .- 1) .- log_ratio)
+
+        loss_info(; 
+            policy_loss, clip_frac, kl_est
+        )
+    end
+    return policy_loss
+end
+
+function get_policyloss(newlogprob::Tuple, oldlogprob::Tuple, advantages, clip_coef, loss_info)
+    policy_loss = sum(zip(newlogprob, oldlogprob)) do (newlog, oldlog)
+        log_ratio = newlog .- oldlog
+        ratio = exp.(log_ratio)
+        pg_loss1 = -advantages .* ratio
+        pg_loss2 = -advantages .* clamp.(ratio, 1-clip_coef, 1+clip_coef)
+        mean(max.(pg_loss1, pg_loss2))    
+    end
+    ignore_derivatives() do 
+        loss_info(; policy_loss)
+    end
+    return policy_loss
 end
 
 function clip_grads!(grads, max_l2)

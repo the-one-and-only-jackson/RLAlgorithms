@@ -52,9 +52,18 @@ Base.length(b::Buffer) = b.traj_len * b.n_envs
 
 function send_to!(buffer::Buffer, idx; kwargs...)
     for (key, val) in kwargs
-        isnothing(val) && continue
-        arr = getfield(buffer, key)
-        copyto!(selectdim(arr, ndims(arr), idx), val)
+        if val isa AbstractArray
+            arr = getfield(buffer, key)
+            copyto!(selectdim(arr, ndims(arr), idx), val)
+        elseif val isa Tuple{Vararg{<:AbstractArray}}
+            for (dst,src) in zip(getfield(buffer, key), val)
+                copyto!(selectdim(dst, ndims(dst), idx), src)
+            end
+        elseif isnothing(val)
+            continue
+        else
+            @assert false "Error in filling buffer"
+        end
     end
     nothing
 end

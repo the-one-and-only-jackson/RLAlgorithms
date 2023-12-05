@@ -26,6 +26,14 @@ function CommonRLInterface.act!(e::VecEnv, a::AbstractArray)
     return r
 end
 
+function CommonRLInterface.act!(e::VecEnv, a::Tuple{Vararg{<:AbstractArray}})
+    r = zeros(Float32, length(e.envs))
+    Threads.@threads for i in 1:length(e.envs)
+        r[i] = act!(e.envs[i], Tuple(selectdim(_a, ndims(_a), i) for _a in a))
+    end 
+    return r
+end
+
 CommonRLInterface.terminated(e::VecEnv) = terminated.(e.envs)
 CommonRLExtensions.truncated(e::VecEnv) = truncated.(e.envs)
 
