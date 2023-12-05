@@ -1,98 +1,95 @@
-abstract type ActorCritic end
+# abstract type ActorCritic end
 
-function (ac::ActorCritic)(state)
-    action, _, _, _ = get_actionvalue(ac, state)
-    return action
-end
-
-struct DiscreteActorCritic{A<:Chain,B<:Chain,C<:Chain,D<:AbstractRNG} <: ActorCritic
-    shared::A
-    actor::B
+struct ActorCritic{S,A,C}
+    shared::S
+    actor::A
     critic::C
+end
+Flux.@functor ActorCritic
+
+struct DiscreteActor{B<:Chain,D<:AbstractRNG}
+    actor::B
     rng::D
 end
-Flux.@functor DiscreteActorCritic
+Flux.@functor DiscreteActor
 
-struct ContinuousActorCritic{A<:Chain,B<:Chain,C<:Chain,D<:AbstractVector{<:AbstractFloat},E<:AbstractRNG} <: ActorCritic
-    shared::A
+struct ContinuousActor{B<:Chain,D<:AbstractVector{<:AbstractFloat},E<:AbstractRNG}
     actor::B
-    critic::C
     log_std::D
     rng::E
     squash::Bool
 end
-Flux.@functor ContinuousActorCritic
+Flux.@functor ContinuousActor
 
-"""
-Constructors
-"""
-
-function ActorCritic(env; kwargs...)
-    if SpaceStyle(actions(env)) == ContinuousSpaceStyle()
-        return ContinuousActorCritic(env; kwargs...)
-    elseif SpaceStyle(actions(env)) == FiniteSpaceStyle()
-        return DiscreteActorCritic(env; kwargs...)
-    else
-        @assert false "ERROR: Actor crtic construction"
-    end
-end
-
-function DiscreteActorCritic(env; rng=default_rng(), kwargs...)
-    ns = length(single_observations(env))
-    na = length(single_actions(env))
-
-    shared, actor, critic = feedforward_feature(ns, na; kwargs...)
-
-    return DiscreteActorCritic(shared, actor, critic, rng)
-end
-
-function ContinuousActorCritic(env::AbstractMultiEnv; rng=default_rng(), log_std_init=-0.5, squash=false, kwargs...)
-    O = single_observations(env)
-    A = single_actions(env)
-
-    @assert A isa Box "This actor-critic model only accepts RLAlgorithms.Spaces.Box observation spaces"
-    @assert A isa Box "This actor-critic model only accepts RLAlgorithms.Spaces.Box action spaces"
-
-    @assert length(size(A))==1 "Only vector action spaces supported"
-
-    ns = length(O)
-    na = length(A)
-
-    if length(size(O)) == 1
-        shared, actor, critic = feedforward_feature(ns, na; kwargs...)
-    else
-        @assert false "Image observations not yet supported"
-    end
-
-    log_std = fill(log_std_init, na) .|> Float32
-
-    return ContinuousActorCritic(shared, actor, critic, log_std, rng, squash)
-end
-
-function feedforward_feature(ns, na;
+function ActorCritic(env; 
     shared_dims = [], 
-    actor_dims  = [64, 64],
     critic_dims = [64, 64],
     act_fun     = tanh,
     hidden_init = Flux.orthogonal(; gain=sqrt(2)),
-    actor_init  = Flux.orthogonal(; gain=0.01),
     critic_init = Flux.orthogonal(; gain=1),
+    kwargs...
     )
 
-    if isempty(shared_dims)
-        actor_dims = [ns; actor_dims; na]
-        critic_dims = [ns; critic_dims; 1]
-    else
-        shared_dims = [ns; shared_dims]
-        actor_dims = [shared_dims[end]; actor_dims; na]
-        critic_dims = [shared_dims[end]; critic_dims; 1]
-    end
+    A = single_actions(env)
+    O = single_observations(env)
 
+    @assert ndims(O) == 1 # only feature vector for now
+    ns = length(O)
+
+    shared_out_size = isempty(shared_dims) ? ns : shared_dims[end]
+
+    if !isempty(shared_dims)
+        shared_dims = [ns; shared_dims]
+    end
     shared = mlp(shared_dims, act_fun, hidden_init)
-    actor = mlp(actor_dims, act_fun, hidden_init, actor_init)
+
+    actor = Actor(A, shared_out_size; kwargs...)
+
+    critic_dims = [shared_out_size; critic_dims; 1]
     critic = mlp(critic_dims, act_fun, hidden_init, critic_init)
 
-    return shared, actor, critic
+    return ActorCritic(shared, actor, critic) 
+end
+
+Actor(args...; kwargs...) = @assert false "ERROR: Actor crtic construction"
+
+function Actor(A::Box, shared_out_size;
+    actor_dims  = [64, 64],
+    act_fun     = tanh,
+    hidden_init = Flux.orthogonal(; gain=sqrt(2)),
+    actor_init  = Flux.orthogonal(; gain=0.01),
+    log_std_init= -0.5, 
+    squash      = false,
+    rng         = default_rng(),
+    kwargs...
+    )
+    na = length(A)
+    actor_dims = [shared_out_size; actor_dims; na]
+    act_net = mlp(actor_dims, act_fun, hidden_init, actor_init)
+    log_std = fill(log_std_init, na) .|> Float32
+    ContinuousActor(act_net, log_std, rng, squash)
+end
+
+function Actor(A::Discrete, shared_out_size;
+    actor_dims  = [64, 64],
+    act_fun     = tanh,
+    hidden_init = Flux.orthogonal(; gain=sqrt(2)),
+    actor_init  = Flux.orthogonal(; gain=0.01),
+    rng         = default_rng(),
+    kwargs...
+    )
+    actor_dims = [shared_out_size; actor_dims; length(collect(A))]
+    act_net = mlp(actor_dims, act_fun, hidden_init, actor_init)
+    DiscreteActor(act_net, rng)
+end
+
+function Actor(A::TupleSpace, shared_out_size; kwargs...)
+    Tuple(Actor(space, shared_out_size; kwargs...) for space in wrapped_space(A))
+end
+
+function (ac::ActorCritic)(state)
+    action, _, _, _ = get_actionvalue(ac, state)
+    return action
 end
 
 function mlp(dims, act_fun, hidden_init, head_init = nothing)
@@ -104,25 +101,29 @@ function mlp(dims, act_fun, hidden_init, head_init = nothing)
     return Chain(layers...)
 end
 
-"""
-get_actionvalue(ac::DiscreteActorCritic, state::AbstractMatrix, action=nothing)
-"""
+function get_actionvalue(
+    ac::ActorCritic, 
+    state::AbstractArray{<:Real},
+    action::Union{Nothing, AbstractArray{<:Real}} = nothing;
+    action_mask = nothing
+    )
 
-function get_feedforward_out(ac::ActorCritic, state::AbstractArray{Float32}) # change state
     shared_out = isempty(ac.shared) ? state : ac.shared(state)
-    actor_out = ac.actor(shared_out)
-    critic_out = ac.critic(shared_out)
-    return actor_out, critic_out
+    action_info = get_action(ac.actor, shared_out, action; action_mask)
+    value = ac.critic(shared_out)
+
+    return (action_info..., value)
 end
 
-function get_actionvalue(
-    ac::DiscreteActorCritic, 
-    state::AbstractArray{<:Real},
+
+function get_action(
+    ac::DiscreteActor, 
+    shared_out::AbstractArray{<:Real},
     action::Union{Nothing, AbstractMatrix{<:Integer}} = nothing;
     action_mask = nothing
     )
 
-    actor_out, value = get_feedforward_out(ac, state)
+    actor_out = ac.actor(shared_out)
 
     if !isnothing(action_mask)
         actor_out += eltype(actor_out)(-1f10) * .!action_mask
@@ -140,77 +141,61 @@ function get_actionvalue(
     idxs = CartesianIndex.(action, reshape(1:length(action), size(action)))
     action_log_prob = log_probs[idxs]
 
-    return action, action_log_prob, entropy, value
-end
-
-function get_actionvalue(
-    ac::ContinuousActorCritic, 
-    state::AbstractArray{<:Real},
-    action::Union{Nothing, <:AbstractArray{<:Real}} = nothing;
-    log_min = -20,
-    log_max = 2,
-    kwargs...
-    )
-
-    action_mean, value = get_feedforward_out(ac, state)
-    log_std = clamp.(ac.log_std, log_min, log_max)
-    action_std = exp.(log_std)
-
-    (action, action_log_prob, entropy) = if ac.squash
-        get_action_squash(action_mean, log_std, action_std, ac.rng, action)
-    else
-        get_action(action_mean, log_std, action_std, ac.rng, action)
-    end
-
-    return action, action_log_prob, entropy, value
+    return action, action_log_prob, entropy
 end
 
 function get_action(
-    action_mean,
-    log_std,
-    action_std,
-    rng,
-    action::Union{Nothing, <:AbstractArray{<:Real}} = nothing
-    )
-
-    if isnothing(action)
-        stand_normal = randn(rng, eltype(action_mean), size(action_mean))
-        action = action_mean .+ action_std .* stand_normal
-    else
-        stand_normal = (action .- action_mean) ./ action_std
-    end
-
-    action_log_prob = normal_logpdf(stand_normal, log_std)
-
-    temp = (1+log(2f0*pi))/2
-    entropy = sum(log_std; dims=1) .+ size(log_std,1) * temp
-
-    return (action, action_log_prob, entropy)
-end
-
-function get_action_squash(
-    action_mean,
-    log_std,
-    action_std,
-    rng,
+    ac::ContinuousActor, 
+    shared_out::AbstractArray{<:Real},
     action::Union{Nothing, <:AbstractArray{<:Real}} = nothing;
-    action_clamp::Float32 = 5f0
+    log_min = -20,
+    log_max = 2,
+    action_clamp = 5f0,
+    kwargs...
     )
+
+    action_mean = ac.actor(shared_out)
+    log_std = clamp.(ac.log_std, log_min, log_max)
+    action_std = exp.(log_std)
+
+    if ac.squash
+        if isnothing(action)
+            stand_normal = randn(rng, eltype(action_mean), size(action_mean))
+            action = action_mean .+ action_std .* stand_normal
+        else
+            stand_normal = (action .- action_mean) ./ action_std
+        end
     
-    if isnothing(action)
-        stand_normal = randn(rng, eltype(action_mean), size(action_mean))
-        action_normal = action_mean .+ action_std .* stand_normal
-        action = tanh.(clamp.(action_normal, -action_clamp, action_clamp)) # clamp for numeric stability
+        action_log_prob = normal_logpdf(stand_normal, log_std)
+    
+        entropy = sum(log_std; dims=1) .+ size(log_std,1) * (1+log(2f0*pi))/2    
     else
-        stand_normal = (inv_tanh(action) .- action_mean) ./ action_std
+        if isnothing(action)
+            stand_normal = randn(rng, eltype(action_mean), size(action_mean))
+            action_normal = action_mean .+ action_std .* stand_normal
+            action = tanh.(clamp.(action_normal, -action_clamp, action_clamp)) # clamp for numeric stability
+        else
+            stand_normal = (inv_tanh(action) .- action_mean) ./ action_std
+        end
+    
+        action_log_prob = normal_logpdf(stand_normal, log_std) .- sum(log.(1 .- action .^ 2); dims=1)
+    
+        entropy = sum(-action_log_prob; dims=1) # estimate    
     end
 
-    action_log_prob = normal_logpdf(stand_normal, log_std) .- sum(log.(1 .- action .^ 2); dims=1)
-
-    entropy = sum(-action_log_prob; dims=1) # estimate
-
-    return (action, action_log_prob, entropy)
+    return action, action_log_prob, entropy
 end
+
+function get_action(ac::Tuple, args...; kwargs...)
+    action_info = Tuple(get_action(actor, args...; kwargs...) for actor in ac)
+
+    action          = Tuple(info[1] for info in action_info)
+    action_log_prob = Tuple(info[2] for info in action_info)
+    entropy         = Tuple(info[3] for info in action_info)
+
+    return action, action_log_prob, entropy
+end
+
 
 """
 Helper functions
