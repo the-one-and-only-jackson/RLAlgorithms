@@ -1,9 +1,10 @@
 @with_kw struct Buffer{
     S<:AbstractArray{<:Real}, 
-    A<:AbstractArray{<:Real}, 
+    A<:Union{AbstractArray{<:Real}, Tuple{Vararg{<:AbstractArray{<:Real}}}}, 
     R<:AbstractArray{<:Real}, # size = (n_env, traj_len)
     D<:AbstractArray{Bool}, 
-    AM<:Union{Nothing,<:AbstractArray{Bool}}
+    AP<:Union{AbstractArray{<:Real}, Tuple{Vararg{<:AbstractArray{<:Real}}}},
+    AM<:Union{Nothing,<:AbstractArray{Bool}, Tuple{Vararg{<:AbstractArray{<:Real}}}}
     }    
 
     traj_len::Int
@@ -13,7 +14,7 @@
     r::R = zeros(Float32, 1, n_envs, traj_len)
     done::D = zeros(Bool, 1, n_envs, traj_len)
     trunc::D = copy(done)
-    a_logprob::R = copy(r)
+    a_logprob::AP = A isa Tuple ? Tuple(copy(r) for _ in eachindex(A)) : copy(r)
     action_mask::AM = nothing
     value::R = copy(r)
     next_value::R = copy(r)
@@ -31,10 +32,13 @@ function Buffer(env::AbstractMultiEnv, traj_len::Int)
     if A isa Box
         a = zeros(eltype(A), size(A)..., n_envs, traj_len)
     elseif A isa Discrete
-        a = zeros(eltype(A), 1, n_envs, traj_len)
+        a = zeros(eltype(A), size(A)..., n_envs, traj_len)
         if provided(valid_action_mask, env)
             action_mask = trues(length(collect(A)), n_envs, traj_len)
         end
+    elseif A isa TupleSpace
+        @assert !provided(valid_action_mask, env) "Need to incorporate action masking"
+        a = Tuple(zeros(eltype(space), size(space)..., n_envs, traj_len) for space in wrapped_space(A))
     else
         @assert "Space Style Error."
     end

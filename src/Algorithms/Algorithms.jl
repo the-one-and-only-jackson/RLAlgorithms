@@ -18,9 +18,7 @@ using ..CommonRLExtensions
 
 export 
     ActorCritic,
-    get_actionvalue,
-    DiscreteActorCritic,
-    ContinuousActorCritic 
+    get_actionvalue
 include("ActorCritics.jl")
 
 include("Buffer.jl")
