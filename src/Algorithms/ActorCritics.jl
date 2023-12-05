@@ -160,7 +160,7 @@ function get_action(
 
     if ac.squash
         if isnothing(action)
-            stand_normal = randn(rng, eltype(action_mean), size(action_mean))
+            stand_normal = randn(ac.rng, eltype(action_mean), size(action_mean))
             action = action_mean .+ action_std .* stand_normal
         else
             stand_normal = (action .- action_mean) ./ action_std
@@ -171,7 +171,7 @@ function get_action(
         entropy = sum(log_std; dims=1) .+ size(log_std,1) * (1+log(2f0*pi))/2    
     else
         if isnothing(action)
-            stand_normal = randn(rng, eltype(action_mean), size(action_mean))
+            stand_normal = randn(ac.rng, eltype(action_mean), size(action_mean))
             action_normal = action_mean .+ action_std .* stand_normal
             action = tanh.(clamp.(action_normal, -action_clamp, action_clamp)) # clamp for numeric stability
         else
