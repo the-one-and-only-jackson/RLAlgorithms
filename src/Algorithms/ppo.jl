@@ -142,7 +142,7 @@ function train_minibatch!(ac, opt, mini_batch, solver, loss_info)
         total_loss = policy_loss + vf_coef * value_loss
 
         ignore_derivatives() do 
-            loss_info(; value_loss, entropy_loss, total_loss)
+            loss_info(; value_loss, total_loss)
             isa(ac.actor, ContinuousActor) && loss_info(; ac.log_std)
         end
 
