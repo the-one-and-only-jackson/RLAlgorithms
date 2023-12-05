@@ -62,10 +62,10 @@ function solve(solver::PPOSolver)
 
     info_log = info.log
 
-    if ac isa ContinuousActorCritic
-        info_log = Dict{Symbol, Any}(info_log)
-        info_log[:log_std] = (info_log[:log_std][1], stack(info_log[:log_std][2])')        
-    end
+    # if ac isa ContinuousActorCritic
+    #     info_log = Dict{Symbol, Any}(info_log)
+    #     info_log[:log_std] = (info_log[:log_std][1], stack(info_log[:log_std][2])')        
+    # end
 
     return cpu(ac), info_log
 end
@@ -153,9 +153,9 @@ function train_minibatch!(ac, opt, mini_batch, solver, loss_info)
                 policy_loss, value_loss, entropy_loss, total_loss, clip_frac, kl_est
             )
 
-            if ac isa ContinuousActorCritic
-                loss_info(; ac.log_std)
-            end
+            # if ac isa ContinuousActorCritic
+            #     loss_info(; ac.log_std)
+            # end
         end
 
         return total_loss

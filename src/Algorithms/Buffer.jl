@@ -14,7 +14,7 @@
     r::R = zeros(Float32, 1, n_envs, traj_len)
     done::D = zeros(Bool, 1, n_envs, traj_len)
     trunc::D = copy(done)
-    a_logprob::AP = A isa Tuple ? Tuple(copy(r) for _ in eachindex(A)) : copy(r)
+    a_logprob::AP = a isa Tuple ? Tuple(copy(r) for _ in eachindex(a)) : copy(r)
     action_mask::AM = nothing
     value::R = copy(r)
     next_value::R = copy(r)

@@ -22,7 +22,7 @@ solver = PPOSolver(;
     kl_targ = Inf32,
     ent_coef = 0.01,
     vf_coef = 1.,
-    opt_0 = Flux.Optimisers.OptimiserChain(Flux.Optimisers.ClipNorm(0.5), Flux.Optimisers.Adam(3e-4)),
+    lr=3e-4,
     clip_coef = 0.2
 )
 
