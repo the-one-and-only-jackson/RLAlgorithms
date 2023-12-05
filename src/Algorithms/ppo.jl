@@ -111,19 +111,12 @@ function train_epochs!(ac, opt, buffer, solver)
         empty!(loss_info.log)
 
         for idxs in Iterators.partition(randperm(solver.rng, length(buffer)), batch_size)
-            mini_batch = map(batch) do x
-                if isnothing(x)
-                    return nothing
-                elseif x isa AbstractArray
+            mini_batch = map(batch) do _batch
+                isnothing(_batch) && return nothing
+                to_tuple = _batch isa Tuple ? _batch : Tuple(_batch)
+                map(to_tuple) do x
                     y = reshape(x, size(x)[1:end-2]..., :) # flatten
-                    copy(selectdim(y, ndims(y), idxs)) # copy important!    
-                elseif x isa Tuple
-                    map(x) do x_el
-                        y = reshape(x_el, size(x)[1:end-2]..., :) # flatten
-                        copy(selectdim(y, ndims(y), idxs)) # copy important!        
-                    end
-                else
-                    @assert false "error"
+                    copy(selectdim(y, ndims(y), idxs)) # copy important!        
                 end
             end
 
