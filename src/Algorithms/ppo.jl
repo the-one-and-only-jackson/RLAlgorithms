@@ -137,19 +137,13 @@ function train_minibatch!(ac, opt, mini_batch, solver, loss_info)
     grads = Flux.gradient(ac) do ac
         (_, newlogprob, entropy, newvalue) = get_actionvalue(ac, mini_batch.s, mini_batch.a; mini_batch.action_mask)
 
-        policy_loss = get_policyloss(newlogprob, mini_batch.a_logprob, mini_batch.advantages, clip_coef, loss_info)
+        policy_loss = get_policyloss(newlogprob, mini_batch.a_logprob, mini_batch.advantages, clip_coef, entropy, ent_coef, loss_info)
         value_loss = Flux.mse(newvalue, mini_batch.value_targets)
-        entropy_loss = mean(mean, entropy)
-        total_loss = policy_loss - ent_coef*entropy_loss + vf_coef*value_loss
+        total_loss = policy_loss + vf_coef * value_loss
 
         ignore_derivatives() do 
-            loss_info(; 
-                value_loss, entropy_loss, total_loss,
-            )
-
-            if ac.actor isa ContinuousActor
-                loss_info(; ac.log_std)
-            end
+            loss_info(; value_loss, entropy_loss, total_loss)
+            isa(ac.actor, ContinuousActor) && loss_info(; ac.log_std)
         end
 
         return total_loss
@@ -168,7 +162,7 @@ function train_minibatch!(ac, opt, mini_batch, solver, loss_info)
     return false
 end
 
-function get_policyloss(newlogprob::AbstractArray, oldlogprob::AbstractArray, advantages, clip_coef, loss_info)
+function get_policyloss(newlogprob::AbstractArray, oldlogprob::AbstractArray, advantages, clip_coef, entropy, ent_coef, loss_info)
     log_ratio = newlogprob .- oldlogprob
     ratio = exp.(log_ratio)
     pg_loss1 = -advantages .* ratio
@@ -182,16 +176,16 @@ function get_policyloss(newlogprob::AbstractArray, oldlogprob::AbstractArray, ad
             policy_loss, clip_frac, kl_est
         )
     end
-    return policy_loss
+    return policy_loss - ent_coef * mean(entropy)
 end
 
-function get_policyloss(newlogprob::Tuple, oldlogprob::Tuple, advantages, clip_coef, loss_info)
-    policy_loss = sum(zip(newlogprob, oldlogprob)) do (newlog, oldlog)
+function get_policyloss(newlogprob::Tuple, oldlogprob::Tuple, advantages, clip_coef, entropy::Tuple, ent_coef, loss_info)
+    policy_loss = sum(zip(newlogprob, oldlogprob, entropy)) do (newlog, oldlog, _entropy)
         log_ratio = newlog .- oldlog
         ratio = exp.(log_ratio)
         pg_loss1 = -advantages .* ratio
         pg_loss2 = -advantages .* clamp.(ratio, 1-clip_coef, 1+clip_coef)
-        mean(max.(pg_loss1, pg_loss2))    
+        mean(max.(pg_loss1, pg_loss2)) - ent_coef * mean(_entropy)
     end
     ignore_derivatives() do 
         loss_info(; policy_loss)
