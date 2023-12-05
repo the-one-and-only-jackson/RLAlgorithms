@@ -179,7 +179,7 @@ function get_action(
 end
 
 function get_action(ac::Tuple, input, actions; kwargs...)
-    if isnnothing(actions)
+    if isnothing(actions)
         action_info = Tuple(get_action(actor, input, actions; kwargs...) for actor in ac)
     else
         action_info = Tuple(get_action(actor, input, action; kwargs...) for (actor,action) in zip(ac,actions))

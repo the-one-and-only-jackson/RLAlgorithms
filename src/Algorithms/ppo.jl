@@ -155,7 +155,7 @@ function train_minibatch!(ac, opt, mini_batch, solver, loss_info)
         return total_loss
     end
 
-    if loss_info.log[:kl_est][end] > 1.5*solver.kl_targ
+    if haskey(loss_info.log, :kl_est) && loss_info.log[:kl_est][end] > 1.5*solver.kl_targ
         return true
     end
 
