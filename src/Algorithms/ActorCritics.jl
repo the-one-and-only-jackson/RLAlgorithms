@@ -101,20 +101,12 @@ function mlp(dims, act_fun, hidden_init, head_init = nothing)
     return Chain(layers...)
 end
 
-function get_actionvalue(
-    ac::ActorCritic, 
-    state::AbstractArray{<:Real},
-    action::Union{Nothing, AbstractArray{<:Real}} = nothing;
-    action_mask = nothing
-    )
-
+function get_actionvalue(ac::ActorCritic, state, action = nothing; action_mask = nothing)
     shared_out = isempty(ac.shared) ? state : ac.shared(state)
     action_info = get_action(ac.actor, shared_out, action; action_mask)
     value = ac.critic(shared_out)
-
     return (action_info..., value)
 end
-
 
 function get_action(
     ac::DiscreteActor, 
@@ -186,8 +178,12 @@ function get_action(
     return action, action_log_prob, entropy
 end
 
-function get_action(ac::Tuple, args...; kwargs...)
-    action_info = Tuple(get_action(actor, args...; kwargs...) for actor in ac)
+function get_action(ac::Tuple, input, actions; kwargs...)
+    if isnnothing(actions)
+        action_info = Tuple(get_action(actor, input, actions; kwargs...) for actor in ac)
+    else
+        action_info = Tuple(get_action(actor, input, action; kwargs...) for (actor,action) in zip(ac,actions))
+    end
 
     action          = Tuple(info[1] for info in action_info)
     action_log_prob = Tuple(info[2] for info in action_info)

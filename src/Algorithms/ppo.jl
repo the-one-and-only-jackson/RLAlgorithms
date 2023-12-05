@@ -111,14 +111,13 @@ function train_epochs!(ac, opt, buffer, solver)
         empty!(loss_info.log)
 
         for idxs in Iterators.partition(randperm(solver.rng, length(buffer)), batch_size)
-            mini_batch = map(batch) do _batch
-                isnothing(_batch) && return nothing
-                to_tuple = _batch isa Tuple ? _batch : Tuple(_batch)
-                map(to_tuple) do x
-                    y = reshape(x, size(x)[1:end-2]..., :) # flatten
-                    copy(selectdim(y, ndims(y), idxs)) # copy important!        
-                end
+            function temp_fun(x)
+                y = reshape(x, size(x)[1:end-2]..., :) # flatten
+                copy(selectdim(y, ndims(y), idxs)) # copy important!        
             end
+            temp_fun(x::Tuple) = temp_fun.(x)
+            temp_fun(::Nothing) = nothing
+            mini_batch = map(temp_fun, batch)
 
             if norm_advantages
                 mini_batch.advantages .= normalize(mini_batch.advantages; dims=2)
@@ -148,7 +147,7 @@ function train_minibatch!(ac, opt, mini_batch, solver, loss_info)
                 value_loss, entropy_loss, total_loss,
             )
 
-            if ac.actor isa ContinuousActorCritic
+            if ac.actor isa ContinuousActor
                 loss_info(; ac.log_std)
             end
         end
