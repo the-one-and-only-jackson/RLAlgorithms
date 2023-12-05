@@ -87,20 +87,6 @@ function Actor(A::TupleSpace, shared_out_size; kwargs...)
     Tuple(Actor(space, shared_out_size; kwargs...) for space in wrapped_space(A))
 end
 
-function get_actionvalue(
-    ac::ActorCritic, 
-    state::AbstractArray{<:Real},
-    action::Union{Nothing, AbstractMatrix{<:Integer}} = nothing;
-    kwargs...
-    )
-
-    shared_out = isempty(ac.shared) ? state : ac.shared(state)
-    value = ac.critic(shared_out)
-    action, action_log_prob, entropy = ac.actor(shared_out; kwargs...)
-
-    return action, action_log_prob, entropy, value
-end
-
 function (ac::ActorCritic)(state)
     action, _, _, _ = get_actionvalue(ac, state)
     return action
