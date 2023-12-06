@@ -17,7 +17,7 @@
     gae_lambda::Float32 = 0.95
     clip_coef::Float32 = 0.2
     norm_advantages::Bool = true
-    ent_coef::Float32 = 0
+    ent_coef::Union{Float32, Tuple{Vararg{Float32}}} = 0f0
     vf_coef::Float32 = 0.5
     rng::RNG = default_rng()
     kl_targ::Float32 = 0.02
@@ -180,12 +180,12 @@ function get_policyloss(newlogprob::AbstractArray, oldlogprob::AbstractArray, ad
 end
 
 function get_policyloss(newlogprob::Tuple, oldlogprob::Tuple, advantages, clip_coef, entropy::Tuple, ent_coef, loss_info)
-    policy_loss = sum(zip(newlogprob, oldlogprob, entropy)) do (newlog, oldlog, _entropy)
+    policy_loss = sum(zip(newlogprob, oldlogprob, entropy, ent_coef)) do (newlog, oldlog, _entropy, _ent_coef)
         log_ratio = newlog .- oldlog
         ratio = exp.(log_ratio)
         pg_loss1 = -advantages .* ratio
         pg_loss2 = -advantages .* clamp.(ratio, 1-clip_coef, 1+clip_coef)
-        mean(max.(pg_loss1, pg_loss2)) - ent_coef * mean(_entropy)
+        mean(max.(pg_loss1, pg_loss2)) - _ent_coef * mean(_entropy)
     end
     ignore_derivatives() do 
         loss_info(; policy_loss)

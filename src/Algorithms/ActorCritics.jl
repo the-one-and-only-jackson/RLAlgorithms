@@ -21,70 +21,92 @@ struct ContinuousActor{B<:Chain,D<:AbstractVector{<:AbstractFloat},E<:AbstractRN
 end
 Flux.@functor ContinuousActor
 
-function ActorCritic(env; 
-    shared_dims = [], 
-    critic_dims = [64, 64],
-    act_fun     = tanh,
-    hidden_init = Flux.orthogonal(; gain=sqrt(2)),
-    critic_init = Flux.orthogonal(; gain=1),
-    kwargs...
-    )
+struct TupleActor{S<:Chain, A<:Tuple}
+    shared::S
+    actors::A
+end
+Flux.@functor TupleActor
 
-    A = single_actions(env)
+"""
+ActorCritic
+
+kwargs:
+    shared_dims
+    critic_dims
+    actor_dims
+    shared_actor_dims
+    actor_init
+    critic_init
+    rng
+    log_std_init
+    squash
+    
+"""
+function ActorCritic(env; shared_dims = [], kwargs...)
     O = single_observations(env)
-
     @assert ndims(O) == 1 # only feature vector for now
     ns = length(O)
-
-    shared_out_size = isempty(shared_dims) ? ns : shared_dims[end]
 
     if !isempty(shared_dims)
         shared_dims = [ns; shared_dims]
     end
-    shared = mlp(shared_dims, act_fun, hidden_init)
+    shared = mlp(shared_dims)
 
-    actor = Actor(A, shared_out_size; kwargs...)
+    shared_out_size = isempty(shared_dims) ? ns : shared_dims[end]
 
-    critic_dims = [shared_out_size; critic_dims; 1]
-    critic = mlp(critic_dims, act_fun, hidden_init, critic_init)
+    actor = Actor(single_actions(env), shared_out_size; kwargs...)
+    critic = Critic(shared_out_size; kwargs...)
 
     return ActorCritic(shared, actor, critic) 
 end
 
+function Critic(input_size;
+    critic_dims = [64, 64],
+    critic_init = Flux.orthogonal(; gain=1),
+    kwargs...
+    )
+
+    critic_dims = [input_size; critic_dims; 1]
+    mlp(critic_dims; head_init=critic_init)
+end
+
 Actor(args...; kwargs...) = @assert false "ERROR: Actor crtic construction"
 
-function Actor(A::Box, shared_out_size;
-    actor_dims  = [64, 64],
-    act_fun     = tanh,
-    hidden_init = Flux.orthogonal(; gain=sqrt(2)),
-    actor_init  = Flux.orthogonal(; gain=0.01),
-    log_std_init= -0.5, 
-    squash      = false,
-    rng         = default_rng(),
+function Actor(A::Box, input_size;
+    actor_dims   = [64, 64],
+    actor_init   = Flux.orthogonal(; gain=0.01),
+    rng          = default_rng(),
+    log_std_init = -0.5, 
+    squash       = false,
     kwargs...
     )
     na = length(A)
-    actor_dims = [shared_out_size; actor_dims; na]
-    act_net = mlp(actor_dims, act_fun, hidden_init, actor_init)
-    log_std = fill(log_std_init, na) .|> Float32
+    act_net = mlp([input_size; actor_dims; na]; head_init=actor_init, kwargs...)
+    log_std = fill(Float32(log_std_init), na)
     ContinuousActor(act_net, log_std, rng, squash)
 end
 
-function Actor(A::Discrete, shared_out_size;
-    actor_dims  = [64, 64],
-    act_fun     = tanh,
-    hidden_init = Flux.orthogonal(; gain=sqrt(2)),
-    actor_init  = Flux.orthogonal(; gain=0.01),
-    rng         = default_rng(),
+function Actor(A::Discrete, input_size;
+    actor_dims = [64, 64],
+    actor_init = Flux.orthogonal(; gain=0.01),
+    rng        = default_rng(),
     kwargs...
     )
-    actor_dims = [shared_out_size; actor_dims; length(collect(A))]
-    act_net = mlp(actor_dims, act_fun, hidden_init, actor_init)
+    na = length(collect(A))
+    act_net = mlp([input_size; actor_dims; na]; head_init=actor_init, kwargs...)
     DiscreteActor(act_net, rng)
 end
 
-function Actor(A::TupleSpace, shared_out_size; kwargs...)
-    Tuple(Actor(space, shared_out_size; kwargs...) for space in wrapped_space(A))
+function Actor(A::TupleSpace, input_size; shared_actor_dims, kwargs...)
+    if !isempty(shared_dims)
+        shared_dims = [ns; shared_dims]
+        shared_out_size = shared_dims[end]
+    else
+        shared_out_size = input_size
+    end
+    shared = mlp(shared_actor_dims; kwargs...)
+    actors = Tuple(Actor(space, shared_out_size; kwargs...) for space in wrapped_space(A))
+    TupleActor(shared, actors)
 end
 
 function (ac::ActorCritic)(state)
@@ -92,7 +114,13 @@ function (ac::ActorCritic)(state)
     return action
 end
 
-function mlp(dims, act_fun, hidden_init, head_init = nothing)
+function mlp(
+    dims; 
+    act_fun = tanh, 
+    hidden_init = Flux.orthogonal(; gain=sqrt(2)),
+    head_init = nothing, 
+    kwargs...)
+
     end_idx = isnothing(head_init) ? length(dims) : length(dims)-1
     layers = Dense[Dense(dims[ii] => dims[ii+1], act_fun; init=hidden_init) for ii = 1:end_idx-1]
     if !isnothing(head_init)
@@ -150,45 +178,44 @@ function get_action(
     log_std = clamp.(ac.log_std, log_min, log_max)
     action_std = exp.(log_std)
 
-    if ac.squash
-        if isnothing(action)
-            stand_normal = randn(ac.rng, eltype(action_mean), size(action_mean))
-            action = action_mean .+ action_std .* stand_normal
+    if isnothing(action)
+        stand_normal = randn(ac.rng, eltype(action_mean), size(action_mean))
+        action_normal = action_mean .+ action_std .* stand_normal
+
+        action = if ac.squash
+            tanh.(clamp.(action_normal, -action_clamp, action_clamp))
         else
-            stand_normal = (action .- action_mean) ./ action_std
+            action_normal
         end
-    
-        action_log_prob = normal_logpdf(stand_normal, log_std)
-    
-        entropy = sum(log_std; dims=1) .+ size(log_std,1) * (1+log(2f0*pi))/2    
     else
-        if isnothing(action)
-            stand_normal = randn(ac.rng, eltype(action_mean), size(action_mean))
-            action_normal = action_mean .+ action_std .* stand_normal
-            action = tanh.(clamp.(action_normal, -action_clamp, action_clamp)) # clamp for numeric stability
+        action_normal = if ac.squash
+            inv_tanh(action)
         else
-            stand_normal = (inv_tanh(action) .- action_mean) ./ action_std
+            action
         end
-    
-        action_log_prob = normal_logpdf(stand_normal, log_std) .- sum(log.(1 .- action .^ 2); dims=1)
-    
-        entropy = sum(-action_log_prob; dims=1) # estimate    
+
+        action_normal = ac.squash ? inv_tanh(action) : action
+        stand_normal = (action_normal .- action_mean) ./ action_std
+    end
+
+    action_log_prob = normal_logpdf(stand_normal, log_std)
+    if ac.squash
+        action_log_prob .-= sum(log.(1 .- action .^ 2); dims=1)
+    end
+
+    entropy = if ac.squash
+        sum(-action_log_prob; dims=1) # estimate  
+    else
+        sum(log_std; dims=1) .+ size(log_std,1) * (1+log(2f0*pi))/2    
     end
 
     return action, action_log_prob, entropy
 end
 
-function get_action(ac::Tuple, input, actions; kwargs...)
-    if isnothing(actions)
-        action_info = Tuple(get_action(actor, input, actions; kwargs...) for actor in ac)
-    else
-        action_info = Tuple(get_action(actor, input, action; kwargs...) for (actor,action) in zip(ac,actions))
-    end
-
-    action          = Tuple(info[1] for info in action_info)
-    action_log_prob = Tuple(info[2] for info in action_info)
-    entropy         = Tuple(info[3] for info in action_info)
-
+function get_action(actor::TupleActor, input, actions=NTuple{length(actor.actors), nothing}; kwargs...)
+    shared_out = isempty(actor.shared) ? input : actor.shared(input)
+    action_info = Tuple(get_action(actor, shared_out, action; kwargs...) for (actors,action) in zip(actor.actors,actions))
+    action, action_log_prob, entropy = Tuple(Tuple(info[i] for info in action_info) for i in 1:3)
     return action, action_log_prob, entropy
 end
 
