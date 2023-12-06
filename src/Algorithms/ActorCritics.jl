@@ -42,22 +42,40 @@ kwargs:
     squash
     
 """
-function ActorCritic(env; shared_dims = [], kwargs...)
-    O = single_observations(env)
-    @assert ndims(O) == 1 # only feature vector for now
-    ns = length(O)
-
-    if !isempty(shared_dims)
-        shared_dims = [ns; shared_dims]
-    end
-    shared = mlp(shared_dims)
-
-    shared_out_size = isempty(shared_dims) ? ns : shared_dims[end]
-
+function ActorCritic(env; kwargs...)
+    shared, shared_out_size = SharedNet(single_observations(env))
     actor = Actor(single_actions(env), shared_out_size; kwargs...)
     critic = Critic(shared_out_size; kwargs...)
-
     return ActorCritic(shared, actor, critic) 
+end
+
+function SharedNet(O::Box; shared_dims = [], kwargs...)
+    if ndims(O) == 1 # only feature vector for now
+        ns = length(O)
+
+        if !isempty(shared_dims)
+            shared_dims = [ns; shared_dims]
+        end
+        shared = mlp(shared_dims)
+
+        shared_out_size = isempty(shared_dims) ? ns : shared_dims[end]
+    elseif ndims(O) == 2
+        @assert false "2 dimensions in size(single_observations(env)) not supported.
+        If you are using image data, dimensions must be (H,W,C)"
+    elseif ndims(O) == 3 # Image data
+        @assert false "Image data not yet supported automatically"
+        # DQN: Input (84, 84, 4, N)
+        Chain(
+            Conv((8,8), 4=>32, relu; stride=4),
+            Conv((4,4), 32=>64, relu; stride=2),
+            Conv((3,3), 64=>64, relu; stride=1),
+            Flux.flatten
+        )
+    else
+        @assert false "More than 3 dimensions in size(single_observations(env))"
+    end
+
+    return shared, shared_out_size
 end
 
 function Critic(input_size;
@@ -98,9 +116,9 @@ function Actor(A::Discrete, input_size;
 end
 
 function Actor(A::TupleSpace, input_size; shared_actor_dims, kwargs...)
-    if !isempty(shared_dims)
-        shared_dims = [ns; shared_dims]
-        shared_out_size = shared_dims[end]
+    if !isempty(shared_actor_dims)
+        shared_actor_dims = [input_size; shared_actor_dims]
+        shared_out_size = shared_actor_dims[end]
     else
         shared_out_size = input_size
     end
@@ -198,9 +216,10 @@ function get_action(
         stand_normal = (action_normal .- action_mean) ./ action_std
     end
 
-    action_log_prob = normal_logpdf(stand_normal, log_std)
-    if ac.squash
-        action_log_prob .-= sum(log.(1 .- action .^ 2); dims=1)
+    action_log_prob = if ac.squash
+        action_log_prob = normal_logpdf(stand_normal, log_std) .- sum(log.(1 .- action .^ 2); dims=1)
+    else
+        normal_logpdf(stand_normal, log_std)
     end
 
     entropy = if ac.squash
@@ -212,9 +231,12 @@ function get_action(
     return action, action_log_prob, entropy
 end
 
-function get_action(actor::TupleActor, input, actions=NTuple{length(actor.actors), nothing}; kwargs...)
+function get_action(actor::TupleActor, input, actions; kwargs...)
     shared_out = isempty(actor.shared) ? input : actor.shared(input)
-    action_info = Tuple(get_action(actor, shared_out, action; kwargs...) for (actors,action) in zip(actor.actors,actions))
+    if isnothing(actions)
+        actions = Tuple(nothing for _ in 1:length(actor.actors))
+    end
+    action_info = Tuple(get_action(actors, shared_out, action; kwargs...) for (actors,action) in zip(actor.actors,actions))
     action, action_log_prob, entropy = Tuple(Tuple(info[i] for info in action_info) for i in 1:3)
     return action, action_log_prob, entropy
 end
