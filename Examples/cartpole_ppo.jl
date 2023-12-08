@@ -2,7 +2,6 @@ using RLAlgorithms.Algorithms: solve, PPOSolver
 using RLAlgorithms.MultiEnv: VecEnv, LoggingWrapper, RewNorm, ObsNorm
 using RLAlgorithms.Environments: CartPole
 using RLAlgorithms.CommonRLExtensions: get_info
-using Flux
 
 # Input is a function to output a CommonRLInterface.AbstractEnv
 # Equiv to VecEnv(()->Pendulum(); n_envs=8)
@@ -20,7 +19,7 @@ solver = PPOSolver(;
     batch_size = 128,
     n_epochs = 4,
     kl_targ = Inf32,
-    ent_coef = 0.01,
+    ent_coef = 0.01f0,
     vf_coef = 1.,
     lr=3e-4,
     clip_coef = 0.2

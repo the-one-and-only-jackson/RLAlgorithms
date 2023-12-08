@@ -13,11 +13,14 @@ struct DiscreteActor{B<:Chain,D<:AbstractRNG}
 end
 Flux.@functor DiscreteActor
 
-struct ContinuousActor{B<:Chain,D<:AbstractVector{<:AbstractFloat},E<:AbstractRNG}
+struct ContinuousActor{T<:AbstractFloat, B<:Chain,D<:AbstractVector{T},E<:AbstractRNG}
     actor::B
     log_std::D
     rng::E
     squash::Bool
+    log_min::T
+    log_max::T
+    action_clamp::T 
 end
 Flux.@functor ContinuousActor
 
@@ -96,12 +99,15 @@ function Actor(A::Box, input_size;
     rng          = default_rng(),
     log_std_init = -0.5, 
     squash       = false,
+    log_min = -20,
+    log_max = 2,
+    action_clamp = 5f0,
     kwargs...
     )
     na = length(A)
     act_net = mlp([input_size; actor_dims; na]; head_init=actor_init, kwargs...)
     log_std = fill(Float32(log_std_init), na)
-    ContinuousActor(act_net, log_std, rng, squash)
+    ContinuousActor(act_net, log_std, rng, squash, log_min, log_max, action_clamp)
 end
 
 function Actor(A::Discrete, input_size;
@@ -186,14 +192,10 @@ function get_action(
     ac::ContinuousActor, 
     shared_out::AbstractArray{<:Real},
     action::Union{Nothing, <:AbstractArray{<:Real}} = nothing;
-    log_min = -20,
-    log_max = 2,
-    action_clamp = 5f0,
-    kwargs...
     )
 
     action_mean = ac.actor(shared_out)
-    log_std = clamp.(ac.log_std, log_min, log_max)
+    log_std = clamp.(ac.log_std, ac.log_min, ac.log_max)
     action_std = exp.(log_std)
 
     if isnothing(action)
@@ -201,7 +203,7 @@ function get_action(
         action_normal = action_mean .+ action_std .* stand_normal
 
         action = if ac.squash
-            tanh.(clamp.(action_normal, -action_clamp, action_clamp))
+            tanh.(clamp.(action_normal, -ac.action_clamp, ac.action_clamp))
         else
             action_normal
         end
