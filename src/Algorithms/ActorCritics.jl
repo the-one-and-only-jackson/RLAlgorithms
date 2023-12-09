@@ -30,17 +30,13 @@ struct TupleActor{S<:Chain, A<:Tuple}
 end
 Flux.@functor TupleActor
 
-struct ScalarCritic{NET<:Chain}
+struct Critic{NET<:Chain, L, F, G}
     net::NET
+    loss::L
+    critic_loss_transform::F
+    inv_critic_loss_transform::G
 end
-Flux.@functor ScalarCritic
-
-struct CategoricalCritic{NET<:Chain, V}
-    net::NET
-    values::V
-end
-Flux.@functor CategoricalCritic
-Flux.trainable(x::CategoricalCritic) = (; x.net) # dont train vector of values
+Flux.@functor Critic
 
 
 """
@@ -57,6 +53,9 @@ kwargs:
     log_std_init
     squash
     critic_type
+    categorical_values
+    critic_loss_transform
+    inv_critic_loss_transform
 """
 function ActorCritic(env; kwargs...)
     shared, shared_out_size = SharedNet(single_observations(env))
@@ -92,40 +91,6 @@ function SharedNet(O::Box; shared_dims = [], kwargs...)
     end
 
     return shared, shared_out_size
-end
-
-function Critic(input_size; critic_type = :scalar, kwargs...)
-    if critic_type == :scalar
-        ScalarCritic(input_size; kwargs...)
-    elseif critic_type == :categorical
-        CategoricalCritic(input_size; kwargs...)
-    else
-        @assert false "critic_type = $critic_type is not supported"
-    end
-end
-
-function ScalarCritic(input_size;
-    critic_dims = [64, 64],
-    critic_init = Flux.orthogonal(; gain=1),
-    kwargs...
-    )
-
-    critic_dims = [input_size; critic_dims; 1]
-    net = mlp(critic_dims; head_init=critic_init)
-    ScalarCritic(net)
-end
-
-function CategoricalCritic(input_size;
-    critic_dims = [64, 64],
-    critic_init = Flux.orthogonal(; gain=0.01),
-    categorical_values,
-    kwargs...
-    )
-
-    @assert !isnothing(categorical_values) "Must provide categorical_values for critic_type = :categorical"
-    critic_dims = [input_size; critic_dims; length(categorical_values)]
-    net = mlp(critic_dims; head_init=critic_init)
-    CategoricalCritic(net, categorical_values)
 end
 
 Actor(args...; kwargs...) = @assert false "ERROR: Actor crtic construction"
@@ -170,9 +135,55 @@ function Actor(A::TupleSpace, input_size; shared_actor_dims, kwargs...)
     TupleActor(shared, actors)
 end
 
-function (ac::ActorCritic)(state)
-    actor_out, critic_out = get_actionvalue(ac, state)
-    return actor_out.action
+function Critic(input_size; 
+    critic_type = :scalar,
+    critic_dims = [64, 64],
+    critic_init = nothing,
+    critic_loss_transform = identity,
+    inv_critic_loss_transform = identity,
+    categorical_values,
+    kwargs...)
+
+    if critic_type == :scalar
+        head_init = @something critic_init Flux.orthogonal(; gain=1) error("Critic init error")
+        last_dim = 1
+        loss_transform = critic_loss_transform
+        inv_loss_transform = inv_critic_loss_transform
+        loss = Flux.mse
+    elseif critic_type == :categorical
+        @assert !isnothing(categorical_values) "Must provide categorical_values for critic_type = :categorical"
+        head_init = @something critic_init Flux.orthogonal(; gain=0.01) error("Critic init error")
+        last_dim = length(categorical_values)
+        function inv_loss_transform(critic_out)
+            transformed_value = reshape(categorical_values, 1, :) * softmax(critic_out; dims=1)
+            inv_critic_loss_transform(transformed_value)
+        end
+        function loss_transform(value_target)
+            transformed_target = critic_loss_transform(value_target)
+            twohotbatch(transformed_target, categorical_values)
+        end
+        loss = Flux.logitcrossentropy
+    else
+        @assert false "critic_type = $critic_type is not supported"
+    end
+    net = mlp([input_size; critic_dims; last_dim]; head_init)
+    Critic(net, loss, loss_transform, inv_loss_transform)
+end
+
+twohotbatch(x,r) = twohotbatch(Float32,x,r)
+function twohotbatch(T::Type, x::AbstractArray{<:Real}, r::UnitRange)
+    @assert any(size(x) .== length(x)) "x must be a row or column vector"
+    @assert all(_x->r.start ≤ _x ≤ r.stop, x) "x in range $(extrema(x)), critic range $(extrema(r))"
+    y = zeros(T, length(r), length(x))
+    for (j, xj) in enumerate(x)
+        i = findlast(_r->_r≤xj, r)
+        p = 1 - (xj - r[i])
+        y[i,j] = p
+        if !isone(p)
+            y[i+1,j] = 1-p
+        end
+    end
+    y
 end
 
 function mlp(
@@ -225,39 +236,19 @@ function get_actionvalue(ac::ActorCritic, input::ACInput)
     return actor_out, critic_out
 end
 
-get_value(critic::ScalarCritic, input) = CriticOutput(critic.net(input))
+get_shared(f, x) = f(x)
+get_shared(::Chain{Tuple{}}, x) = x
 
-function get_value(critic::CategoricalCritic, input)
+function get_value(critic::Critic, input)
     critic_out = critic.net(input)
-    value = reshape(critic.values, 1, :) * softmax(critic_out; dims=1) # bad type stability here
+    value = critic.inv_critic_loss_transform(critic_out)
     CriticOutput(value, critic_out)
 end
 
-get_criticloss(::ScalarCritic, out::CriticOutput, target) = Flux.mse(out.value, target)
-
-function get_criticloss(critic::CategoricalCritic, out::CriticOutput, target)
-    target_dist = @ignore_derivatives twohotbatch(target, critic.values)
-    Flux.logitcrossentropy(out.critic_out, target_dist)
+function get_criticloss(critic::Critic, out::CriticOutput, value_target)
+    target = @ignore_derivatives critic.critic_loss_transform(value_target)
+    critic.loss(out.critic_out, target)
 end
-
-twohotbatch(x,r) = twohotbatch(Float32,x,r)
-function twohotbatch(T::Type, x::AbstractArray{<:Real}, r::UnitRange)
-    @assert any(size(x) .== length(x)) "x must be a row or column vector"
-    @assert all(_x->r.start ≤ _x ≤ r.stop, x) "x in range $(extrema(x)), critic range $(extrema(r))"
-    y = zeros(T, length(r), length(x))
-    for (j, xj) in enumerate(x)
-        i = findlast(_r->_r≤xj, r)
-        p = 1 - (xj - r[i])
-        y[i,j] = p
-        if !isone(p)
-            y[i+1,j] = 1-p
-        end
-    end
-    y
-end
-
-get_shared(f, x) = f(x)
-get_shared(::Chain{Tuple{}}, x) = x
 
 function get_action(ac::DiscreteActor, input::ACInput)
     actor_out = ac.actor(input.observation)
@@ -341,7 +332,10 @@ end
 _to_tuple(x::Tuple, N) = x
 _to_tuple(x, N) = (x for _ in 1:N)
 
-
+function (ac::ActorCritic)(state)
+    actor_out, critic_out = get_actionvalue(ac, state)
+    return actor_out.action
+end
 
 """
 Helper functions
