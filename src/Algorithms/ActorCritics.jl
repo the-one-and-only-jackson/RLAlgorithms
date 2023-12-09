@@ -43,6 +43,8 @@ Flux.@functor Critic
 ActorCritic
 
 kwargs:
+    shared
+    shared_out_size
     shared_dims
     critic_dims
     actor_dims
@@ -57,10 +59,19 @@ kwargs:
     critic_loss_transform
     inv_critic_loss_transform
 """
-function ActorCritic(env; kwargs...)
-    shared, shared_out_size = SharedNet(single_observations(env))
+function ActorCritic(env; shared=nothing, shared_out_size=nothing, kwargs...)
+    shared_provided = !isnothing(shared) && !isnothing(shared_out_size)
+    shared_not_provided = isnothing(shared) && isnothing(shared_out_size)
+    valid_flag = shared_not_provided || shared_provided
+    @assert valid_flag "Provide both or neither of shared, shared_out_size"
+
+    if shared_not_provided
+        shared, shared_out_size = SharedNet(single_observations(env))
+    end
+
     actor = Actor(single_actions(env), shared_out_size; kwargs...)
     critic = Critic(shared_out_size; kwargs...)
+
     return ActorCritic(shared, actor, critic) 
 end
 
