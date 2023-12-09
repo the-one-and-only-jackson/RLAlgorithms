@@ -23,13 +23,13 @@ normed_env = RewNorm(; discount, env = ObsNorm(; env = log_env))
 solver = PPOSolver(; 
     env = normed_env, 
     discount, 
-    n_steps=1_000_000,
-    traj_len=256,
-    batch_size=256,
+    n_steps=500_000,
+    traj_len=128,
+    batch_size=128,
+    n_epochs = 4
 )
 
 ac, info_log = solve(solver)
-
 
 # ==================================================
 # Plots

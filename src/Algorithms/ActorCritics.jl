@@ -30,6 +30,19 @@ struct TupleActor{S<:Chain, A<:Tuple}
 end
 Flux.@functor TupleActor
 
+struct ScalarCritic{NET<:Chain}
+    net::NET
+end
+Flux.@functor ScalarCritic
+
+struct CategoricalCritic{NET<:Chain, V}
+    net::NET
+    values::V
+end
+Flux.@functor CategoricalCritic
+Flux.trainable(x::CategoricalCritic) = (; x.net) # dont train vector of values
+
+
 """
 ActorCritic
 
@@ -43,7 +56,7 @@ kwargs:
     rng
     log_std_init
     squash
-    
+    critic_type
 """
 function ActorCritic(env; kwargs...)
     shared, shared_out_size = SharedNet(single_observations(env))
@@ -81,14 +94,38 @@ function SharedNet(O::Box; shared_dims = [], kwargs...)
     return shared, shared_out_size
 end
 
-function Critic(input_size;
+function Critic(input_size; critic_type = :scalar, kwargs...)
+    if critic_type == :scalar
+        ScalarCritic(input_size; kwargs...)
+    elseif critic_type == :categorical
+        CategoricalCritic(input_size; kwargs...)
+    else
+        @assert false "critic_type = $critic_type is not supported"
+    end
+end
+
+function ScalarCritic(input_size;
     critic_dims = [64, 64],
     critic_init = Flux.orthogonal(; gain=1),
     kwargs...
     )
 
     critic_dims = [input_size; critic_dims; 1]
-    mlp(critic_dims; head_init=critic_init)
+    net = mlp(critic_dims; head_init=critic_init)
+    ScalarCritic(net)
+end
+
+function CategoricalCritic(input_size;
+    critic_dims = [64, 64],
+    critic_init = Flux.orthogonal(; gain=0.01),
+    categorical_values,
+    kwargs...
+    )
+
+    @assert !isnothing(categorical_values) "Must provide categorical_values for critic_type = :categorical"
+    critic_dims = [input_size; critic_dims; length(categorical_values)]
+    net = mlp(critic_dims; head_init=critic_init)
+    CategoricalCritic(net, categorical_values)
 end
 
 Actor(args...; kwargs...) = @assert false "ERROR: Actor crtic construction"
@@ -99,8 +136,8 @@ function Actor(A::Box, input_size;
     rng          = default_rng(),
     log_std_init = -0.5, 
     squash       = false,
-    log_min = -20,
-    log_max = 2,
+    log_min = -20f0,
+    log_max = 2f0,
     action_clamp = 5f0,
     kwargs...
     )
@@ -134,8 +171,8 @@ function Actor(A::TupleSpace, input_size; shared_actor_dims, kwargs...)
 end
 
 function (ac::ActorCritic)(state)
-    action, _, _, _ = get_actionvalue(ac, state)
-    return action
+    actor_out, critic_out = get_actionvalue(ac, state)
+    return actor_out.action
 end
 
 function mlp(
@@ -153,24 +190,80 @@ function mlp(
     return Chain(layers...)
 end
 
-function get_actionvalue(ac::ActorCritic, state, action = nothing; action_mask = nothing)
-    shared_out = isempty(ac.shared) ? state : ac.shared(state)
-    action_info = get_action(ac.actor, shared_out, action; action_mask)
-    value = ac.critic(shared_out)
-    return (action_info..., value)
+## 
+# Get action value information functions
+##
+
+@kwdef struct ACInput{O, A, AM}
+    observation::O
+    action::A       = observation isa Tuple ? (nothing for _ in 1:length(O)) : nothing
+    action_mask::AM = observation isa Tuple ? (nothing for _ in 1:length(O)) : nothing
+end
+ACInput(O) = ACInput(observations = O)
+
+struct PolicyOutput{A, AP, E}
+    action::A
+    log_prob::AP
+    entropy::E
 end
 
-function get_action(
-    ac::DiscreteActor, 
-    shared_out::AbstractArray{<:Real},
-    action::Union{Nothing, AbstractMatrix{<:Integer}} = nothing;
-    action_mask = nothing
+struct CriticOutput{A,B}
+    value::A
+    critic_out::B
+end
+CriticOutput(value) = CriticOutput(value, value)
+
+function get_actionvalue(ac::ActorCritic, input::ACInput)
+    shared_out = get_shared(ac.shared, input.observation)
+    actor_input = ACInput(
+        observation = shared_out,
+        action = input.action,
+        action_mask = input.action_mask
     )
+    actor_out  = get_action(ac.actor, actor_input)
+    critic_out = get_value(ac.critic, shared_out)
+    return actor_out, critic_out
+end
 
-    actor_out = ac.actor(shared_out)
+get_value(critic::ScalarCritic, input) = CriticOutput(critic.net(input))
 
-    if !isnothing(action_mask)
-        actor_out += eltype(actor_out)(-1f10) * .!action_mask
+function get_value(critic::CategoricalCritic, input)
+    critic_out = critic.net(input)
+    value = reshape(critic.values, 1, :) * softmax(critic_out; dims=1) # bad type stability here
+    CriticOutput(value, critic_out)
+end
+
+get_criticloss(::ScalarCritic, out::CriticOutput, target) = Flux.mse(out.value, target)
+
+function get_criticloss(critic::CategoricalCritic, out::CriticOutput, target)
+    target_dist = @ignore_derivatives twohotbatch(target, critic.values)
+    Flux.logitcrossentropy(out.critic_out, target_dist)
+end
+
+twohotbatch(x,r) = twohotbatch(Float32,x,r)
+function twohotbatch(T::Type, x::AbstractArray{<:Real}, r::UnitRange)
+    @assert any(size(x) .== length(x)) "x must be a row or column vector"
+    @assert all(_x->r.start ≤ _x ≤ r.stop, x) "x in range $(extrema(x)), critic range $(extrema(r))"
+    y = zeros(T, length(r), length(x))
+    for (j, xj) in enumerate(x)
+        i = findlast(_r->_r≤xj, r)
+        p = 1 - (xj - r[i])
+        y[i,j] = p
+        if !isone(p)
+            y[i+1,j] = 1-p
+        end
+    end
+    y
+end
+
+get_shared(f, x) = f(x)
+get_shared(::Chain{Tuple{}}, x) = x
+
+function get_action(ac::DiscreteActor, input::ACInput)
+    actor_out = ac.actor(input.observation)
+
+    if !isnothing(input.action_mask)
+        actor_out += eltype(actor_out)(-1f10) * .!input.action_mask
     end
 
     log_probs = actor_out .- logsumexp(actor_out; dims=1)
@@ -178,27 +271,24 @@ function get_action(
 
     entropy = -sum(log_probs .* probs, dims=1)
 
-    if isnothing(action)
+    if isnothing(input.action)
         action = sample_discrete.(ac.rng, eachcol(cpu(probs))) # need to implement for gpu?
+    else
+        action = input.action
     end
 
     idxs = CartesianIndex.(action, reshape(1:length(action), size(action)))
     action_log_prob = log_probs[idxs]
 
-    return action, action_log_prob, entropy
+    return PolicyOutput(action, action_log_prob, entropy)
 end
 
-function get_action(
-    ac::ContinuousActor, 
-    shared_out::AbstractArray{<:Real},
-    action::Union{Nothing, <:AbstractArray{<:Real}} = nothing;
-    )
-
-    action_mean = ac.actor(shared_out)
+function get_action(ac::ContinuousActor, input::ACInput)
+    action_mean = ac.actor(input.observation)
     log_std = clamp.(ac.log_std, ac.log_min, ac.log_max)
     action_std = exp.(log_std)
 
-    if isnothing(action)
+    if isnothing(input.action)
         stand_normal = randn(ac.rng, eltype(action_mean), size(action_mean))
         action_normal = action_mean .+ action_std .* stand_normal
 
@@ -208,6 +298,7 @@ function get_action(
             action_normal
         end
     else
+        action = input.action
         action_normal = if ac.squash
             inv_tanh(action)
         else
@@ -230,18 +321,26 @@ function get_action(
         sum(log_std; dims=1) .+ size(log_std,1) * (1+log(2f0*pi))/2    
     end
 
-    return action, action_log_prob, entropy
+    return PolicyOutput(action, action_log_prob, entropy)
 end
 
-function get_action(actor::TupleActor, input, actions; kwargs...)
-    shared_out = isempty(actor.shared) ? input : actor.shared(input)
-    if isnothing(actions)
-        actions = Tuple(nothing for _ in 1:length(actor.actors))
-    end
-    action_info = Tuple(get_action(actors, shared_out, action; kwargs...) for (actors,action) in zip(actor.actors,actions))
-    action, action_log_prob, entropy = Tuple(Tuple(info[i] for info in action_info) for i in 1:3)
-    return action, action_log_prob, entropy
+function get_action(actor::TupleActor, input::ACInput)
+    shared_out = get_shared(actor.shared, input.observation)
+
+    N = length(actor.actors)
+    action_tuples = ACInput.(_to_tuple.((shared_out, input.action, input.action_mask), N)...)
+
+    action_info = get_action.(actor.actors, action_tuples)
+
+    return PolicyOutput(
+        (info.action   for info in action_info), 
+        (info.log_prob for info in action_info), 
+        (info.entropy  for info in action_info)
+    )
 end
+_to_tuple(x::Tuple, N) = x
+_to_tuple(x, N) = (x for _ in 1:N)
+
 
 
 """

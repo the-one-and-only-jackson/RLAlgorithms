@@ -5,28 +5,60 @@ using RLAlgorithms.CommonRLExtensions: get_info
 
 # Input is a function to output a CommonRLInterface.AbstractEnv
 # Equiv to VecEnv(()->Pendulum(); n_envs=8)
-vec_env = VecEnv(; n_envs=4) do 
-    CartPole()
-end
-
 discount = 0.99
 
+p = plot(xlabel="Steps", title="Episodic Reward")
+for i in 1:5
+    solver = PPOSolver(; 
+        env = ObsNorm(; env = LoggingWrapper(; discount, env = VecEnv(()->CartPole(); n_envs=8))), 
+        discount, 
+        n_steps=100_000,
+        traj_len = 128,
+        batch_size = 128,
+        n_epochs = 4,
+        kl_targ = 0.02,
+        ent_coef = 0.0f0,
+        vf_coef = 1.,
+        lr=3e-4,
+        clip_coef = 0.2,
+        ac_kwargs = (; critic_type = :categorical, categorical_values = 0:ceil(Int, 1/(1-discount)))
+    )
+
+    ac, info_log = solve(solver)
+
+    hist = get_info(solver.env)["LoggingWrapper"]
+    CIplot!(p, hist["steps"], hist["reward"], label=false, c=i)
+end
+plot(p)
+
+
 solver = PPOSolver(; 
-    env = RewNorm(; discount, env=ObsNorm(; env = LoggingWrapper(; discount, env = vec_env))), 
+    env = ObsNorm(; env = LoggingWrapper(; discount, env = VecEnv(()->CartPole(); n_envs=8))), 
     discount, 
     n_steps=100_000,
     traj_len = 128,
     batch_size = 128,
-    n_epochs = 4,
-    kl_targ = Inf32,
-    ent_coef = 0.01f0,
+    n_epochs = 10,
+    kl_targ = 0.02,
+    ent_coef = 0.0f0,
     vf_coef = 1.,
     lr=3e-4,
-    clip_coef = 0.2
+    clip_coef = 0.2,
+    gae_lambda = 1.0,
+    ac_kwargs = (; critic_dims = [256, 256], critic_type = :categorical, categorical_values = 0:1+ceil(Int, 1/(1-discount)))
 )
 
 ac, info_log = solve(solver)
 
+
+hist = get_info(solver.env)["LoggingWrapper"]
+CIplot(hist["steps"], hist["reward"], label=false, c=1)
+
+
+plot(info_log[:value_loss]...; label=false, yaxis=:log)
+
+plot(info_log[:kl_est]...; label=false)
+info_log
 
 # ==================================================
 # Plots

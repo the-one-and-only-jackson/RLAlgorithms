@@ -94,8 +94,9 @@ end
 function get_stateactionvalue(env, ac)
     s = observe(env)
     action_mask = if provided(valid_action_mask, env) valid_action_mask(env) end
-    (a, a_logprob, _, value) = get_actionvalue(ac, s; action_mask)
-    return (; s, action_mask, a, a_logprob, value)
+    ac_input = ACInput(; observation = s, action_mask = action_mask)
+    actor_out, critic_out = get_actionvalue(ac, ac_input)
+    return (; s, action_mask, a=actor_out.action, a_logprob=actor_out.log_prob, critic_out.value)
 end
 
 function train_epochs!(ac, opt, buffer, solver)
@@ -134,18 +135,20 @@ end
 function train_minibatch!(ac, opt, mini_batch, solver, loss_info)
     @unpack clip_coef, ent_coef, vf_coef, clipl2 = solver
 
-    grads = Flux.gradient(ac) do ac
-        (_, newlogprob, entropy, newvalue) = get_actionvalue(ac, mini_batch.s, mini_batch.a; mini_batch.action_mask)
+    ac_input = ACInput(mini_batch.s, mini_batch.a, mini_batch.action_mask)
 
-        policy_loss, clip_frac, kl_est = get_policyloss(newlogprob, mini_batch.a_logprob, mini_batch.advantages, clip_coef)
-        entropy_loss = get_entropyloss(entropy, ent_coef)
-        value_loss = vf_coef * Flux.mse(newvalue, mini_batch.value_targets)
+    grads = Flux.gradient(ac) do ac
+        actor_out, critic_out = get_actionvalue(ac, ac_input)
+
+        policy_loss, clip_frac, kl_est = get_policyloss(actor_out.log_prob, mini_batch.a_logprob, mini_batch.advantages, clip_coef)
+        entropy_loss = get_entropyloss(actor_out.entropy, ent_coef)
+        value_loss = vf_coef * get_criticloss(ac.critic, critic_out, mini_batch.value_targets)
         total_loss = policy_loss + entropy_loss + value_loss
 
         ignore_derivatives() do
             loss_info(; policy_loss, clip_frac, kl_est)
             loss_info(; value_loss, total_loss)
-            isa(ac.actor, ContinuousActor) && loss_info(; ac.log_std)
+            isa(ac.actor, ContinuousActor) && loss_info(; ac.actor.log_std)
         end
 
         return total_loss
