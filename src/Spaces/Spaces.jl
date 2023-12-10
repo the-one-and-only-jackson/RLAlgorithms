@@ -141,7 +141,7 @@ struct TupleSpace{S<:Tuple{Vararg{<:NumericArraySpace}}} <: NumericArraySpace
 end
 TupleSpace(args...) = TupleSpace(args)
 
-Base.length(space::TupleSpace) = length(space.base_space)
+Base.length(space::TupleSpace) = length(space.base_spaces)
 wrapped_space(space::TupleSpace) = space.base_spaces
 SpaceStyle(space::TupleSpace) = reduce(SpaceStyle, space.base_spaces)
 

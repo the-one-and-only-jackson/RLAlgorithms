@@ -134,7 +134,7 @@ function Actor(A::Discrete, input_size;
     DiscreteActor(act_net, rng)
 end
 
-function Actor(A::TupleSpace, input_size; shared_actor_dims, kwargs...)
+function Actor(A::TupleSpace, input_size; shared_actor_dims=[], kwargs...)
     if !isempty(shared_actor_dims)
         shared_actor_dims = [input_size; shared_actor_dims]
         shared_out_size = shared_actor_dims[end]
@@ -182,16 +182,20 @@ function Critic(input_size;
 end
 
 twohotbatch(x,r) = twohotbatch(Float32,x,r)
-function twohotbatch(T::Type, x::AbstractArray{<:Real}, r::UnitRange)
+function twohotbatch(T::Type, x::AbstractArray{<:Real}, r::AbstractRange)
     @assert any(size(x) .== length(x)) "x must be a row or column vector"
-    @assert all(_x->r.start ≤ _x ≤ r.stop, x) "x in range $(extrema(x)), critic range $(extrema(r))"
     y = zeros(T, length(r), length(x))
     for (j, xj) in enumerate(x)
         i = findlast(_r->_r≤xj, r)
-        p = 1 - (xj - r[i])
-        y[i,j] = p
-        if !isone(p)
-            y[i+1,j] = 1-p
+        if i == length(r)
+            y[i,j] = 1
+        elseif isnothing(i)
+            y[1,j] = 1
+        else
+            x0, x1 = r[i], r[i+1]
+            p = (x1 - xj) / (x1 - x0)
+            y[i, j]   = p
+            y[i+1, j] = 1-p
         end
     end
     y
@@ -218,10 +222,10 @@ end
 
 @kwdef struct ACInput{O, A, AM}
     observation::O
-    action::A       = observation isa Tuple ? (nothing for _ in 1:length(O)) : nothing
-    action_mask::AM = observation isa Tuple ? (nothing for _ in 1:length(O)) : nothing
+    action::A       = nothing
+    action_mask::AM = action isa Tuple ? (nothing for _ in 1:length(action)) : nothing
 end
-ACInput(O) = ACInput(observations = O)
+ACInput(O) = ACInput(observation = O)
 
 struct PolicyOutput{A, AP, E}
     action::A
@@ -335,16 +339,16 @@ function get_action(actor::TupleActor, input::ACInput)
     action_info = get_action.(actor.actors, action_tuples)
 
     return PolicyOutput(
-        (info.action   for info in action_info), 
-        (info.log_prob for info in action_info), 
-        (info.entropy  for info in action_info)
+        Tuple(info.action   for info in action_info), 
+        Tuple(info.log_prob for info in action_info), 
+        Tuple(info.entropy  for info in action_info)
     )
 end
 _to_tuple(x::Tuple, N) = x
-_to_tuple(x, N) = (x for _ in 1:N)
+_to_tuple(x, N) = Tuple(x for _ in 1:N)
 
 function (ac::ActorCritic)(state)
-    actor_out, critic_out = get_actionvalue(ac, state)
+    actor_out, critic_out = get_actionvalue(ac, ACInput(state))
     return actor_out.action
 end
 

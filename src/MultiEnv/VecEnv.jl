@@ -39,10 +39,16 @@ CommonRLExtensions.truncated(e::VecEnv) = truncated.(e.envs)
 
 function CommonRLInterface.observe(e::VecEnv; batch=e.batch)
     if batch
-        O = observations(e)
-        obs = zeros(eltype(O), size(O))
-        for (dst,env) in zip(eachslice(obs; dims=ndims(obs)), e.envs)
-            dst .= observe(env)
+        O = single_observations(e)
+        if O isa Box
+            obs = stack(map(observe, e.envs))
+        elseif O isa TupleSpace
+            obs_tups = map(observe, e.envs)
+            N = length(O)
+            obs = Tuple(stack(x[i] for x in obs_tups) for i in 1:N)
+        else
+            @assert "VecEnv observation space error"
+            obs = nothing
         end
         return obs
     else

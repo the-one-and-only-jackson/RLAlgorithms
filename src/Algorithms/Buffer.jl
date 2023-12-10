@@ -1,10 +1,10 @@
 @with_kw struct Buffer{
-    S<:AbstractArray{<:Real}, 
+    S<:Union{AbstractArray{<:Real}, Tuple{Vararg{<:AbstractArray{<:Real}}}}, 
     A<:Union{AbstractArray{<:Real}, Tuple{Vararg{<:AbstractArray{<:Real}}}}, 
     R<:AbstractArray{<:Real}, # size = (n_env, traj_len)
     D<:AbstractArray{Bool}, 
     AP<:Union{AbstractArray{<:Real}, Tuple{Vararg{<:AbstractArray{<:Real}}}},
-    AM<:Union{Nothing,<:AbstractArray{Bool}, Tuple{Vararg{<:AbstractArray{<:Real}}}}
+    AM<:Union{Nothing,<:AbstractArray{Bool},Tuple{Vararg{<:AbstractArray{<:Bool}}}}
     }    
 
     traj_len::Int
@@ -24,7 +24,14 @@ function Buffer(env::AbstractMultiEnv, traj_len::Int)
     n_envs = length(env)
 
     O = single_observations(env)
-    s = zeros(eltype(O), size(O)..., n_envs, traj_len)
+
+    if O isa Box
+        s = zeros(eltype(O), size(O)..., n_envs, traj_len)
+    elseif O isa TupleSpace
+        s = Tuple(zeros(eltype(space), size(space)..., n_envs, traj_len) for space in wrapped_space(O))
+    else
+        @assert "Observation SpaceStyle error."
+    end
 
     A = single_actions(env)
     action_mask = nothing
@@ -40,7 +47,7 @@ function Buffer(env::AbstractMultiEnv, traj_len::Int)
         @assert !provided(valid_action_mask, env) "Need to incorporate action masking"
         a = Tuple(zeros(eltype(space), size(space)..., n_envs, traj_len) for space in wrapped_space(A))
     else
-        @assert "Space Style Error."
+        @assert "Action SpaceStyle error."
     end
 
     return Buffer(; s, a, action_mask, traj_len, n_envs)

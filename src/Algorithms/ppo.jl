@@ -13,6 +13,7 @@
     traj_len::Int64 = 2048
     batch_size::Int64 = 64
     n_epochs::Int64 = 10
+    burnin_steps::Int64 = 0
     discount::Float32 = 0.99
     gae_lambda::Float32 = 0.95
     clip_coef::Float32 = 0.2
@@ -33,29 +34,40 @@
 end
 
 function solve(solver::PPOSolver)
-    @unpack env, ac, opt_0, n_steps, discount, gae_lambda, lr, lr_decay, traj_len = solver
+    @unpack env, ac, opt_0, n_steps, discount, gae_lambda, lr, lr_decay, traj_len, burnin_steps = solver
 
     start_time = time()
     info = Logger{Tuple{Vector, Vector}}()
-
-    opt = Flux.setup(opt_0, ac)
-    buffer = Buffer(env, traj_len)
+    prog = Progress(n_steps)
 
     reset!(env)
-    
-    prog = Progress((n_steps / length(buffer)) |> floor |> Int)
 
-    for global_step in length(buffer):length(buffer):n_steps
+    burnin_traj_len = floor(Int, burnin_steps/length(env))
+    burnin_steps = length(env) * burnin_traj_len
+
+    if burnin_steps > 0
+        loss_info = critic_burnin(solver, burnin_traj_len)
+        info(burnin_steps; wall_time = time() - start_time, learning_rate=lr, loss_info...)
+        ProgressMeter.update!(prog, burnin_steps)
+    end
+    
+    buffer = Buffer(env, traj_len)
+    opt = Flux.setup(opt_0, ac)
+
+    for global_step in burnin_steps+length(buffer):length(buffer):n_steps
         fill_buffer!(env, buffer, ac)
 
         learning_rate = lr_decay ? (lr - lr*global_step/n_steps) : lr
         Flux.Optimisers.adjust!(opt, learning_rate)
 
-        loss_info = train_epochs!(ac, opt, buffer, solver)
+        loss_info = train_epochs!(ac, opt, buffer, solver, false)
         
         info(global_step; wall_time = time() - start_time, learning_rate, loss_info...)
 
-        next!(prog; showvalues = zip(keys(info.log), map(x->x[2][end], values(info.log))))
+        ProgressMeter.update!(
+            prog, global_step; 
+            showvalues = zip(keys(info.log), map(x->x[2][end], values(info.log)))
+        )
     end
 
     finish!(prog)
@@ -68,6 +80,46 @@ function solve(solver::PPOSolver)
     # end
 
     return cpu(ac), info_log
+end
+
+function critic_burnin(solver, burnin_traj_len)
+    @unpack env, ac, opt_0, batch_size, discount, vf_coef, clipl2, rng = solver
+
+    opt = Flux.setup(opt_0, ac)
+    buffer = Buffer(env, burnin_traj_len)
+    fill_buffer!(env, buffer, ac)
+
+    _, value_targets = gae(buffer, discount, 1)
+
+    loss_info = Logger{Vector}()
+
+    for _ in 1:solver.n_epochs
+        empty!(loss_info.log)
+
+        for idxs in Iterators.partition(randperm(rng, length(buffer)), batch_size)
+            function temp_fun(x)
+                y = reshape(x, size(x)[1:end-2]..., :) # flatten
+                copy(selectdim(y, ndims(y), idxs)) # copy important!        
+            end
+            temp_fun(x::Tuple) = temp_fun.(x)
+
+            ac_input = ACInput(observation = temp_fun(buffer.s))
+            targets = temp_fun(value_targets)
+        
+            grads = Flux.gradient(ac) do ac
+                _, critic_out = get_actionvalue(ac, ac_input)
+                value_loss = vf_coef * get_criticloss(ac.critic, critic_out, targets)   
+                @ignore_derivatives loss_info(; value_loss, total_loss=value_loss)
+                return value_loss
+            end
+        
+            isfinite(clipl2) && clip_grads!(grads[1], clipl2)
+        
+            Flux.update!(opt, ac, grads[1])
+        end
+    end
+
+    return map(mean, (; loss_info.log...))   
 end
 
 function fill_buffer!(env::AbstractMultiEnv, buffer::Buffer, ac::ActorCritic)
@@ -99,7 +151,7 @@ function get_stateactionvalue(env, ac)
     return (; s, action_mask, a=actor_out.action, a_logprob=actor_out.log_prob, critic_out.value)
 end
 
-function train_epochs!(ac, opt, buffer, solver)
+function train_epochs!(ac, opt, buffer, solver, value_only)
     @unpack batch_size, discount, gae_lambda, norm_advantages = solver
 
     advantages, value_targets = gae(buffer, discount, gae_lambda)
@@ -124,7 +176,7 @@ function train_epochs!(ac, opt, buffer, solver)
                 mini_batch.advantages .= normalize(mini_batch.advantages; dims=2)
             end
     
-            flag = train_minibatch!(ac, opt, mini_batch, solver, loss_info)
+            flag = train_minibatch!(ac, opt, mini_batch, solver, loss_info, value_only)
             flag && return map(mean, (; loss_info.log...))
         end
     end
@@ -132,7 +184,7 @@ function train_epochs!(ac, opt, buffer, solver)
     return map(mean, (; loss_info.log...))
 end
 
-function train_minibatch!(ac, opt, mini_batch, solver, loss_info)
+function train_minibatch!(ac, opt, mini_batch, solver, loss_info, value_only)
     @unpack clip_coef, ent_coef, vf_coef, clipl2 = solver
 
     ac_input = ACInput(mini_batch.s, mini_batch.a, mini_batch.action_mask)
@@ -143,6 +195,14 @@ function train_minibatch!(ac, opt, mini_batch, solver, loss_info)
         policy_loss, clip_frac, kl_est = get_policyloss(actor_out.log_prob, mini_batch.a_logprob, mini_batch.advantages, clip_coef)
         entropy_loss = get_entropyloss(actor_out.entropy, ent_coef)
         value_loss = vf_coef * get_criticloss(ac.critic, critic_out, mini_batch.value_targets)
+
+        if value_only
+            policy_loss *= 0
+            entropy_loss *= 0
+            clip_frac *= 0
+            kl_est *= 0
+        end
+
         total_loss = policy_loss + entropy_loss + value_loss
 
         ignore_derivatives() do
