@@ -44,7 +44,6 @@ ActorCritic
 
 kwargs:
     shared
-    shared_out_size
     shared_dims
     critic_dims
     actor_dims
@@ -59,14 +58,19 @@ kwargs:
     critic_loss_transform
     inv_critic_loss_transform
 """
-function ActorCritic(env; shared=nothing, shared_out_size=nothing, kwargs...)
-    shared_provided = !isnothing(shared) && !isnothing(shared_out_size)
-    shared_not_provided = isnothing(shared) && isnothing(shared_out_size)
-    valid_flag = shared_not_provided || shared_provided
-    @assert valid_flag "Provide both or neither of shared, shared_out_size"
-
-    if shared_not_provided
+function ActorCritic(env; shared=nothing, kwargs...)
+    if isnothing(shared)
         shared, shared_out_size = SharedNet(single_observations(env))
+    else
+        O = single_observations(env)
+        if O isa Tuple
+            sz = (size(O)..., 1)
+        else
+            sz = map(space->(size(space)..., 1), wrapped_space(O))
+        end
+        out_size = Flux.outputsize(shared, sz)
+        @assert length(out_size) == 2 "Shared layer should output size (X by N) where N is the batch size"
+        shared_out_size = out_size[1]
     end
 
     actor = Actor(single_actions(env), shared_out_size; kwargs...)
@@ -152,7 +156,7 @@ function Critic(input_size;
     critic_init = nothing,
     critic_loss_transform = identity,
     inv_critic_loss_transform = identity,
-    categorical_values,
+    categorical_values = nothing,
     kwargs...)
 
     if critic_type == :scalar
