@@ -24,6 +24,18 @@ struct ContinuousActor{T<:AbstractFloat, B<:Chain,D<:AbstractVector{T},E<:Abstra
 end
 Flux.@functor ContinuousActor
 
+struct SDEActor{T<:AbstractFloat, A<:Chain,B<:Chain,C<:Chain,E<:AbstractRNG}
+    shared_net::A
+    actor_net::B
+    log_std_net::C
+    rng::E
+    squash::Bool
+    log_min::T
+    log_max::T
+    action_clamp::T 
+end
+Flux.@functor SDEActor
+
 struct TupleActor{S<:Chain, A<:Tuple}
     shared::S
     actors::A
@@ -57,6 +69,7 @@ kwargs:
     categorical_values
     critic_loss_transform
     inv_critic_loss_transform
+    sde
 """
 function ActorCritic(env; shared=nothing, kwargs...)
     if isnothing(shared)
@@ -119,12 +132,20 @@ function Actor(A::Box, input_size;
     log_min = -20f0,
     log_max = 2f0,
     action_clamp = 5f0,
+    sde = false,
     kwargs...
     )
     na = length(A)
-    act_net = mlp([input_size; actor_dims; na]; head_init=actor_init, kwargs...)
-    log_std = fill(Float32(log_std_init), na)
-    ContinuousActor(act_net, log_std, rng, squash, log_min, log_max, action_clamp)
+    if sde
+        act_net = mlp([input_size; actor_dims; na]; head_init=actor_init, kwargs...)
+        log_std = fill(Float32(log_std_init), na)
+        ContinuousActor(act_net, log_std, rng, squash, log_min, log_max, action_clamp)
+    else
+        shared_net = mlp([input_size; actor_dims]; kwargs...)
+        act_net = mlp([actor_dims; 2*na]; head_init=actor_init, kwargs...)
+        log_std_net = mlp([actor_dims; 2*na]; head_init=actor_init, kwargs...)
+        SDEActor(shared_net, act_net, log_std_net, rng, squash, log_min, log_max, action_clamp)
+    end
 end
 
 function Actor(A::Discrete, input_size;
@@ -296,6 +317,17 @@ end
 function get_action(ac::ContinuousActor, input::ACInput)
     action_mean = ac.actor(input.observation)
     log_std = clamp.(ac.log_std, ac.log_min, ac.log_max)
+    commmon_continuous_action(ac, input, action_mean, log_std)
+end
+
+function get_action(ac::SDEActor, input::ACInput)
+    shared = get_shared(ac.shared_net, input.observation)
+    action_mean = ac.actor_net(shared)
+    log_std = clamp.(ac.log_std_net(shared), ac.log_min, ac.log_max)
+    commmon_continuous_action(ac, input, action_mean, log_std)
+end
+
+function commmon_continuous_action(ac::Union{ContinuousActor, SDEActor}, input::ACInput, action_mean, log_std)
     action_std = exp.(log_std)
 
     if isnothing(input.action)
@@ -314,21 +346,15 @@ function get_action(ac::ContinuousActor, input::ACInput)
         else
             action
         end
-
-        action_normal = ac.squash ? inv_tanh(action) : action
         stand_normal = (action_normal .- action_mean) ./ action_std
     end
 
-    action_log_prob = if ac.squash
+    if ac.squash
         action_log_prob = normal_logpdf(stand_normal, log_std) .- sum(log.(1 .- action .^ 2); dims=1)
+        entropy = sum(-action_log_prob; dims=1) # estimate  
     else
-        normal_logpdf(stand_normal, log_std)
-    end
-
-    entropy = if ac.squash
-        sum(-action_log_prob; dims=1) # estimate  
-    else
-        sum(log_std; dims=1) .+ size(log_std,1) * (1+log(2f0*pi))/2    
+        action_log_prob = normal_logpdf(stand_normal, log_std)
+        entropy = sum(log_std; dims=1) .+ size(log_std,1) * (1+log(2f0*pi))/2
     end
 
     return PolicyOutput(action, action_log_prob, entropy)
