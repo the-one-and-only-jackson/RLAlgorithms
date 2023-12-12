@@ -136,14 +136,14 @@ function Actor(A::Box, input_size;
     kwargs...
     )
     na = length(A)
-    if sde
+    if !sde
         act_net = mlp([input_size; actor_dims; na]; head_init=actor_init, kwargs...)
         log_std = fill(Float32(log_std_init), na)
         ContinuousActor(act_net, log_std, rng, squash, log_min, log_max, action_clamp)
     else
         shared_net = mlp([input_size; actor_dims]; kwargs...)
-        act_net = mlp([actor_dims; 2*na]; head_init=actor_init, kwargs...)
-        log_std_net = mlp([actor_dims; 2*na]; head_init=actor_init, kwargs...)
+        act_net = mlp([actor_dims; na]; head_init=actor_init, kwargs...)
+        log_std_net = mlp([actor_dims; na]; head_init=actor_init, kwargs...)
         SDEActor(shared_net, act_net, log_std_net, rng, squash, log_min, log_max, action_clamp)
     end
 end
