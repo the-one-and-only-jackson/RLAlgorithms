@@ -18,7 +18,7 @@
     gae_lambda::Float32 = 0.95
     clip_coef::Float32 = 0.2
     norm_advantages::Bool = true
-    ent_coef::Union{Float32, Tuple{Vararg{Float32}}} = 0f0
+    ent_coef::Float32 = 0f0
     vf_coef::Float32 = 0.5
     rng::RNG = default_rng()
     kl_targ::Float32 = 0.02
@@ -60,7 +60,7 @@ function solve(solver::PPOSolver)
         learning_rate = lr_decay ? (lr - lr*global_step/n_steps) : lr
         Flux.Optimisers.adjust!(opt, learning_rate)
 
-        loss_info = train_epochs!(ac, opt, buffer, solver, false)
+        loss_info = train_epochs!(ac, opt, buffer, solver)
         
         info(global_step; wall_time = time() - start_time, learning_rate, loss_info...)
 
@@ -108,12 +108,22 @@ function critic_burnin(solver, burnin_traj_len)
         
             grads = Flux.gradient(ac) do ac
                 _, critic_out = get_actionvalue(ac, ac_input)
-                value_loss = vf_coef * get_criticloss(ac.critic, critic_out, targets)   
-                @ignore_derivatives loss_info(; value_loss, total_loss=value_loss)
+                value_loss = get_criticloss(ac.critic, critic_out, targets)[1]
+                @ignore_derivatives loss_info(; value_loss, total_loss=vf_coef*value_loss)
                 return value_loss
             end
         
-            isfinite(clipl2) && clip_grads!(grads[1], clipl2)
+            P = Flux.params(grads[1])
+            l2_norm = sqrt(sum(x->norm(x)^2, P))
+            loss_info(; l2_norm)
+        
+            if isfinite(clipl2)
+                lambda = min(1, clipl2/l2_norm)
+                for p in P
+                    p .*= lambda
+                end
+            end
+        
         
             Flux.update!(opt, ac, grads[1])
         end
@@ -151,7 +161,7 @@ function get_stateactionvalue(env, ac)
     return (; s, action_mask, a=actor_out.action, a_logprob=actor_out.log_prob, critic_out.value)
 end
 
-function train_epochs!(ac, opt, buffer, solver, value_only)
+function train_epochs!(ac, opt, buffer, solver)
     @unpack batch_size, discount, gae_lambda, norm_advantages = solver
 
     advantages, value_targets = gae(buffer, discount, gae_lambda)
@@ -176,7 +186,7 @@ function train_epochs!(ac, opt, buffer, solver, value_only)
                 mini_batch.advantages .= normalize(mini_batch.advantages; dims=2)
             end
     
-            flag = train_minibatch!(ac, opt, mini_batch, solver, loss_info, value_only)
+            flag = train_minibatch!(ac, opt, mini_batch, solver, loss_info)
             flag && return map(mean, (; loss_info.log...))
         end
     end
@@ -184,7 +194,7 @@ function train_epochs!(ac, opt, buffer, solver, value_only)
     return map(mean, (; loss_info.log...))
 end
 
-function train_minibatch!(ac, opt, mini_batch, solver, loss_info, value_only)
+function train_minibatch!(ac, opt, mini_batch, solver, loss_info)
     @unpack clip_coef, ent_coef, vf_coef, clipl2 = solver
 
     ac_input = ACInput(mini_batch.s, mini_batch.a, mini_batch.action_mask)
@@ -193,22 +203,13 @@ function train_minibatch!(ac, opt, mini_batch, solver, loss_info, value_only)
         actor_out, critic_out = get_actionvalue(ac, ac_input)
 
         policy_loss, clip_frac, kl_est = get_policyloss(actor_out.log_prob, mini_batch.a_logprob, mini_batch.advantages, clip_coef)
-        entropy_loss = get_entropyloss(actor_out.entropy, ent_coef)
-        value_loss = vf_coef * get_criticloss(ac.critic, critic_out, mini_batch.value_targets)
-
-        if value_only
-            policy_loss *= 0
-            entropy_loss *= 0
-            clip_frac *= 0
-            kl_est *= 0
-        end
-
-        total_loss = policy_loss + entropy_loss + value_loss
+        entropy = get_entropy(actor_out.entropy)
+        value_loss, unexplained_variance = get_criticloss(ac.critic, critic_out, mini_batch.value_targets)
+        total_loss = policy_loss - ent_coef * entropy + vf_coef * value_loss
 
         ignore_derivatives() do
-            loss_info(; policy_loss, clip_frac, kl_est)
-            loss_info(; value_loss, total_loss)
-            isa(ac.actor, ContinuousActor) && loss_info(; ac.actor.log_std)
+            loss_info(; policy_loss, clip_frac, kl_est, unexplained_variance)
+            loss_info(; value_loss, total_loss, entropy)
         end
 
         return total_loss
@@ -218,8 +219,15 @@ function train_minibatch!(ac, opt, mini_batch, solver, loss_info, value_only)
         return true
     end
 
+    P = Flux.params(grads[1])
+    l2_norm = sqrt(sum(x->norm(x)^2, P))
+    loss_info(; l2_norm)
+
     if isfinite(clipl2)
-        clip_grads!(grads[1], clipl2)
+        lambda = min(1, clipl2/l2_norm)
+        for p in P
+            p .*= lambda
+        end
     end
 
     Flux.update!(opt, ac, grads[1])
@@ -241,7 +249,6 @@ function get_policyloss(newlogprob::AbstractArray, oldlogprob::AbstractArray, ad
 end
 
 function get_policyloss(newlogprob::Tuple, oldlogprob::Tuple, advantages, clip_coef)
-
     policyloss_tups = Tuple(
         get_policyloss(_newlogprob, _oldlogprob, advantages, clip_coef) 
         for (_newlogprob, _oldlogprob) in zip(newlogprob, oldlogprob)
@@ -249,25 +256,13 @@ function get_policyloss(newlogprob::Tuple, oldlogprob::Tuple, advantages, clip_c
 
     policy_loss = sum(x->x[1], policyloss_tups)
     clip_frac = sum(x->x[2], policyloss_tups) / length(policyloss_tups)
-    kl_est = maximum(x->x[3], policyloss_tups)
+    kl_est = sum(x->x[3], policyloss_tups)
 
     return policy_loss, clip_frac, kl_est
 end
 
-get_entropyloss(entropy::AbstractArray, ent_coef::Real) = -ent_coef * mean(entropy)
-get_entropyloss(entropy::Tuple, ent_coef::Tuple) = mapreduce(get_entropyloss, +, entropy, ent_coef)
-get_entropyloss(entropy::Tuple, ent_coef::Real) = mapreduce(x->get_entropyloss(x, ent_coef), +, entropy)
-
-
-function clip_grads!(grads, max_l2)
-    P = Flux.params(grads)
-    l2_norm = sqrt(sum(x->norm(x)^2, P))
-    lambda = min(1, max_l2/l2_norm)
-    for p in P
-        p .*= lambda
-    end
-    nothing
-end
+get_entropy(entropy::AbstractArray) = mean(entropy)
+get_entropy(entropy::Tuple) = sum(get_entropy, entropy)
 
 gae(buffer, γ, λ) = gae!(similar(buffer.r), similar(buffer.r), buffer, γ, λ)
 function gae!(advantages, value_targets, buffer::Buffer, γ::Real, λ::Real)

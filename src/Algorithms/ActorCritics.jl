@@ -287,7 +287,9 @@ end
 
 function get_criticloss(critic::Critic, out::CriticOutput, value_target)
     target = @ignore_derivatives critic.critic_loss_transform(value_target)
-    critic.loss(out.critic_out, target)
+    loss = critic.loss(out.critic_out, target)
+    unexplained_variance = @ignore_derivatives Flux.mse(out.value, value_target)/var(value_target)
+    loss, unexplained_variance
 end
 
 function get_action(ac::DiscreteActor, input::ACInput)

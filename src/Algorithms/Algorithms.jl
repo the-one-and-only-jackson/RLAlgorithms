@@ -7,7 +7,7 @@ using ProgressMeter
 using Parameters
 
 using Random: AbstractRNG, default_rng, seed!, randperm
-using Statistics: mean, std
+using Statistics: mean, std, var
 using ChainRules: ignore_derivatives, @ignore_derivatives
 using LinearAlgebra: norm
 
